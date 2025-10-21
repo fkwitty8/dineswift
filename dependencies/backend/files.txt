@@ -1,12 +1,10 @@
-Django, 
-Django REST Framework, 
-djangorestframework-simplejwt, 
-Psycopg2,
-Pillow,
-python-dotenv,
-Celery,
-redis,
-django-cors-headers,
-whitenoise
-Django Channels #WebSockets in the local server for the kitchen web app.
-HTTP-based sync protocol
+Django, //framework
+djangorestframework-simplejwt,// reat api
+django-postgres-extra,//for partitioning
+django-cors-headers//- Allows you to specify which domains can make requests to your Django application.
+- Essential for building APIs that need to be accessed from different domains.
+psycopg2-binary 
+channels 
+daphne 
+pillow 
+python-decouple
