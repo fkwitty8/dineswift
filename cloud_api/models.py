@@ -58,6 +58,7 @@ class User(AbstractUser):
             models.Index(fields=['email'], name='idx_users_email'),
             models.Index(fields=['is_active'], name='idx_users_active', condition=Q(is_active=True)),
             models.Index(fields=['last_login'], name='idx_users_last_login'),
+            GinIndex(fields=['communication_preferences'], name='idx_users_communication_prefs'),
         ]
 
 class Role(models.Model):
@@ -66,7 +67,8 @@ class Role(models.Model):
     permissions = models.JSONField()
     description = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    
+    updated_at = models.DateTimeField(auto_now=True)
+    deleted_at = models.DateTimeField(blank=True, null=True)
     class Meta:
         db_table = 'roles'
         indexes = [
@@ -113,7 +115,7 @@ class UserRole(models.Model):
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, blank=True, null=True)
     is_active = models.BooleanField(default=True)
     assigned_at = models.DateTimeField(auto_now_add=True)
-    
+    updated_at = models.DateTimeField(auto_now=True)
     class Meta:
         db_table = 'user_roles'
         indexes = [
@@ -171,7 +173,7 @@ class LocalServer(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='online')
     last_sync = models.DateTimeField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    
+    updated_at = models.DateTimeField(auto_now=True)
     class Meta:
         db_table = 'local_servers'
         indexes = [
@@ -257,6 +259,7 @@ class MenuItemIngredient(models.Model):
     quantity_required = models.DecimalField(max_digits=10, decimal_places=3, validators=[MinValueValidator(0)])
     unit = models.CharField(max_length=50)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:
         db_table = 'menu_item_ingredients'
@@ -317,3 +320,203 @@ class RestaurantSupplier(models.Model):
             models.Index(fields=['restaurant', 'is_preferred'], name='idx_rs_preferred', condition=Q(is_preferred=True)),
         ]
 
+class DeliveryBatch(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('in_progress', 'In Progress'),
+        ('completed', 'Completed'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    assigned_waiter = models.ForeignKey(User, on_delete=models.CASCADE)
+    batch_status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    optimized_route = models.JSONField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+    total_distance = models.DecimalField(max_digits=8, decimal_places=2, blank=True, null=True)
+    estimated_completion_time = models.IntegerField(blank=True, null=True)
+    actual_completion_time = models.IntegerField(blank=True, null=True)
+    fuel_cost_estimate = models.DecimalField(max_digits=8, decimal_places=2, blank=True, null=True)
+    batch_efficiency_score = models.DecimalField(max_digits=4, decimal_places=2, default=0.00)
+    
+    class Meta:
+        db_table = 'delivery_batches'
+        indexes = [
+            models.Index(fields=['restaurant'], name='idx_dv_restaurant'),
+            models.Index(fields=['batch_status'], name='idx_dv_status'),
+            models.Index(fields=['assigned_waiter'], name='idx_dv_waiter'),
+            models.Index(fields=['created_at'], name='idx_dv_created_at'),
+            models.Index(fields=['batch_efficiency_score'], name='idx_dv_efficiency'),
+            models.Index(fields=['total_distance'], name='idx_dv_distance'),
+            models.Index(fields=['estimated_completion_time', 'actual_completion_time'], name='idx_dv_completion'),
+        ]
+        
+     
+class KitchenDisplayOrder(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('preparing', 'Preparing'),
+        ('ready', 'Ready'),
+        ('served', 'Served'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order = models.ForeignKey('Order', on_delete=models.CASCADE)
+    menu_item = models.ForeignKey(MenuItem, on_delete=models.CASCADE)
+    quantity = models.IntegerField(validators=[MinValueValidator(1)])
+    special_instructions = models.TextField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    station_assigned = models.CharField(max_length=100, blank=True, null=True)
+    preparation_start_time = models.DateTimeField(blank=True, null=True)
+    preparation_end_time = models.DateTimeField(blank=True, null=True)
+    chef_notes = models.TextField(blank=True, null=True)
+    priority = models.IntegerField(default=1, validators=[MinValueValidator(1), MaxValueValidator(5)])
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'kitchen_display_orders'
+        indexes = [
+            models.Index(fields=['status'], name='idx_ko_status'),
+            models.Index(fields=['station_assigned'], name='idx_ko_station'),
+            models.Index(fields=['priority', 'created_at'], name='idx_ko_priority'),
+            models.Index(fields=['preparation_start_time', 'preparation_end_time'], name='idx_ko_preparation'),
+        ]
+        
+ 
+class Order(models.Model):
+    TYPE_CHOICES = [
+        ('sales', 'Sales'),
+        ('supply', 'Supply'),
+    ]
+    
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('confirmed', 'Confirmed'),
+        ('preparing', 'Preparing'),
+        ('ready', 'Ready'),
+        ('in_delivery', 'In Delivery'),
+        ('delivered', 'Delivered'),
+        ('cancelled', 'Cancelled'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    order_type = models.CharField(max_length=20, choices=TYPE_CHOICES)
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES)
+    total_amount = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(0)])
+    notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'order'
+        indexes = [
+            models.Index(fields=['restaurant', 'created_at'], name='idx_orders_restaurant_created'),
+            models.Index(fields=['status', 'created_at'], name='idx_orders_status_created'),
+            models.Index(fields=['created_at'], name='idx_orders_created_at'),
+            models.Index(fields=['restaurant', 'created_at'], name='idx_orders_active', condition=~models.Q(status__in=['cancelled', 'delivered'])),
+            models.Index(fields=['restaurant', 'status', 'created_at'], name='idx_orders_kitchen_status', condition=models.Q(status__in=['confirmed', 'preparing'])),
+        ]
+        
+        
+class SalesOrder(models.Model):
+    SUBTYPE_CHOICES = [
+        ('dine_in', 'Dine In'),
+        ('takeaway', 'Takeaway'),
+        ('delivery', 'Delivery'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order = models.OneToOneField(Order, on_delete=models.CASCADE)
+    customer_user = models.ForeignKey(User, on_delete=models.CASCADE)
+    order_subtype = models.CharField(max_length=20, choices=SUBTYPE_CHOICES)
+    table = models.ForeignKey(RestaurantTable, on_delete=models.SET_NULL, blank=True, null=True)
+    assigned_waiter = models.ForeignKey(User, on_delete=models.SET_NULL, blank=True, null=True, related_name='assigned_orders')
+    estimated_preparation_time = models.IntegerField(blank=True, null=True)
+    actual_preparation_time = models.IntegerField(blank=True, null=True)
+    otp_code = models.CharField(max_length=6, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)      
+        
+        
+    class Meta:
+        db_table = 'sales_orders'
+        indexes = [
+            models.Index(fields=['customer_user'], name='idx_sales_orders_customer'),
+            models.Index(fields=['order_subtype'], name='idx_sales_orders_subtype'),
+            models.Index(fields=['table'], name='idx_sales_orders_table'),
+            models.Index(fields=['assigned_waiter'], name='idx_sales_orders_waiter'),
+            models.Index(fields=['customer_user', 'created_at'], name='idx_sales_orders_customer_date'),
+        ]
+        
+class OrderItem(models.Model):
+    SOURCE_CHOICES = [
+        ('menu_item', 'Menu Item'),
+        ('inventory_item', 'Inventory Item'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order = models.ForeignKey(Order, on_delete=models.CASCADE)
+    source_entity_id = models.UUIDField()
+    source_entity_type = models.CharField(max_length=20, choices=SOURCE_CHOICES)
+    quantity = models.DecimalField(max_digits=10, decimal_places=3, validators=[MinValueValidator(0)])
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)])
+    total_price = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)])
+    special_instructions = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True) 
+    updated_at = models.DateTimeField(auto_now=True) 
+    
+    class Meta:
+        db_table = 'order_items'
+        indexes = [
+            models.Index(fields=['order'], name='idx_order_items_order'),
+            models.Index(fields=['source_entity_id', 'source_entity_type'], name='idx_order_items_source_entity'),
+            models.Index(fields=['source_entity_type', 'source_entity_id'], name='idx_order_items_source_type'),
+        ]
+        
+class Booking(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('confirmed', 'Confirmed'),
+        ('checked_in', 'Checked In'),
+        ('completed', 'Completed'),
+        ('cancelled', 'Cancelled'),
+        ('no_show', 'No Show'),
+    ]
+    
+    DEPOSIT_STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('paid', 'Paid'),
+        ('refunded', 'Refunded'),
+        ('forfeited', 'Forfeited'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    customer_user = models.ForeignKey(User, on_delete=models.CASCADE)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    table = models.ForeignKey(RestaurantTable, on_delete=models.CASCADE)
+    booking_date = models.DateField()
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    party_size = models.IntegerField(validators=[MinValueValidator(1)])
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    deposit_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0, validators=[MinValueValidator(0)])
+    deposit_status = models.CharField(max_length=20, choices=DEPOSIT_STATUS_CHOICES, default='pending')
+    special_requests = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)  
+    current_date = models.DateField(auto_now=True)
+    
+    class Meta:
+        db_table = 'bookings'
+        indexes = [
+            models.Index(fields=['restaurant'], name='idx_bookings_restaurant'),
+            models.Index(fields=['customer_user'], name='idx_bookings_customer'),
+            models.Index(fields=['table'], name='idx_bookings_table'),
+            models.Index(fields=['booking_date'], name='idx_bookings_date'),
+            models.Index(fields=['status'], name='idx_bookings_status'),
+            models.Index(fields=['restaurant', 'booking_date'], name='idx_bookings_restaurant_date'),
+            models.Index(fields=['customer_user', 'booking_date'], name='idx_bookings_customer_date'),
+            ]

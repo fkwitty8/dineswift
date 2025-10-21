@@ -8,3 +8,5 @@ channels
 daphne 
 pillow 
 python-decouple
+python-dotenv
+supabase
