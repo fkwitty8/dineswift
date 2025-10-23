@@ -1,5 +1,8 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 """
 Django settings for cloud_server project.
@@ -23,10 +26,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-ch_nuh)9xv^a)y6-%$og&o1p=(z6+9h)kw_i=z38&hgo6!kj(3'
+SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-ch_nuh)9xv^a)y6-%$og&o1p=(z6+9h)kw_i=z38&hgo6!kj(3')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
 ALLOWED_HOSTS = []
 
@@ -89,11 +92,11 @@ WSGI_APPLICATION = 'cloud_server.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'dineswiftcloud',
-        'USER': 'postgres',
-        'PASSWORD': 'root',
-        'HOST': 'localhost',
-        'PORT': '5432',
+        'NAME': os.getenv('DATABASE_NAME', 'railway'),
+        'USER': os.getenv('DATABASE_USER', 'postgres'),
+        'PASSWORD': os.getenv('DATABASE_PASSWORD'),
+        'HOST': os.getenv('DATABASE_HOST'),
+        'PORT': os.getenv('DATABASE_PORT', '5432'),
     }
 }
 
@@ -158,3 +161,8 @@ CHANNEL_LAYERS = {
         'BACKEND': 'channels.layers.InMemoryChannelLayer',
     },
 }
+
+# MoMo Payment Gateway Configuration
+MOMO_API_URL = os.getenv('MOMO_API_URL', 'https://sandbox.momodeveloper.mtn.com')
+MOMO_API_KEY = os.getenv('MOMO_API_KEY', '')
+MOMO_API_USER = os.getenv('MOMO_API_USER', '')

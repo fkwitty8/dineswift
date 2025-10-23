@@ -519,4 +519,457 @@ class Booking(models.Model):
             models.Index(fields=['status'], name='idx_bookings_status'),
             models.Index(fields=['restaurant', 'booking_date'], name='idx_bookings_restaurant_date'),
             models.Index(fields=['customer_user', 'booking_date'], name='idx_bookings_customer_date'),
-            ]
+        ]
+
+
+class Payment(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('processing', 'Processing'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+        ('refunded', 'Refunded'),
+    ]
+    
+    TYPE_CHOICES = [
+        ('order', 'Order'),
+        ('booking', 'Booking'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    idempotency_key = models.CharField(max_length=255, unique=True)
+    payment_type = models.CharField(max_length=20, choices=TYPE_CHOICES)
+    reference_id = models.UUIDField()
+    amount = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(0)])
+    payment_method = models.CharField(max_length=50, default='momo')
+    phone_number = models.CharField(max_length=50)
+    momo_transaction_id = models.CharField(max_length=255, blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    gateway_response = models.JSONField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'payments'
+        indexes = [
+            models.Index(fields=['idempotency_key'], name='idx_payments_idempotency'),
+            models.Index(fields=['reference_id'], name='idx_payments_reference'),
+            models.Index(fields=['status'], name='idx_payments_status'),
+            models.Index(fields=['momo_transaction_id'], name='idx_payments_momo_txn'),
+        ]
+
+
+class OrderItemRejection(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order_item = models.ForeignKey(OrderItem, on_delete=models.CASCADE)
+    rejected_quantity = models.DecimalField(max_digits=10, decimal_places=3)
+    rejection_reason = models.TextField()
+    rejection_proof_url = models.CharField(max_length=500, blank=True, null=True)
+    digital_signature = models.TextField(blank=True, null=True)
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'order_item_rejections'
+
+
+class SupplyOrder(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order = models.OneToOneField(Order, on_delete=models.CASCADE)
+    supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE)
+    expected_delivery_date = models.DateField()
+    delivery_status = models.CharField(max_length=50)
+    invoice_total = models.DecimalField(max_digits=12, decimal_places=2)
+    adjusted_total = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
+    quality_rating = models.DecimalField(max_digits=3, decimal_places=2, blank=True, null=True)
+    on_time_rating = models.DecimalField(max_digits=3, decimal_places=2, blank=True, null=True)
+    rejection_proof_url = models.CharField(max_length=500, blank=True, null=True)
+    
+    class Meta:
+        db_table = 'supply_orders'
+
+
+class DeliveryPartner(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    partner_name = models.CharField(max_length=255)
+    partner_type = models.CharField(max_length=50)
+    contact_info = models.JSONField()
+    is_active = models.BooleanField(default=True)
+    average_rating = models.DecimalField(max_digits=3, decimal_places=2, default=0.00)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'delivery_partners'
+
+
+class DeliveryTracking(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order = models.ForeignKey(Order, on_delete=models.CASCADE)
+    delivery_partner = models.ForeignKey(DeliveryPartner, on_delete=models.CASCADE)
+    current_location = models.JSONField(blank=True, null=True)
+    status = models.CharField(max_length=50)
+    estimated_arrival = models.DateTimeField(blank=True, null=True)
+    actual_arrival = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'delivery_tracking'
+
+
+class BillingRecord(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order = models.ForeignKey(Order, on_delete=models.CASCADE)
+    subtotal_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    tax_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    service_charge = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    total_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    billing_status = models.CharField(max_length=50)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'billing_records'
+
+
+class PaymentMethod(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    method_type = models.CharField(max_length=50)
+    provider = models.CharField(max_length=100)
+    last_four_digits = models.CharField(max_length=4, blank=True, null=True)
+    is_default = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'payment_methods'
+
+
+class Transaction(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    source_entity_id = models.UUIDField()
+    source_entity_type = models.CharField(max_length=50)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    transaction_type = models.CharField(max_length=50)
+    category = models.CharField(max_length=100)
+    payment_method = models.ForeignKey(PaymentMethod, on_delete=models.SET_NULL, blank=True, null=True)
+    gateway_transaction_id = models.CharField(max_length=255, blank=True, null=True)
+    status = models.CharField(max_length=50)
+    transaction_date = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    notes = models.TextField(blank=True, null=True)
+    
+    class Meta:
+        db_table = 'transactions'
+
+
+class CustomerAccount(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    account_type = models.CharField(max_length=50)
+    is_refundable = models.BooleanField(default=True)
+    crypto_details = models.JSONField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'customer_accounts'
+
+
+class RestaurantStaff(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user_role = models.ForeignKey(UserRole, on_delete=models.CASCADE)
+    employee_id = models.CharField(max_length=50, unique=True)
+    hire_date = models.DateField()
+    termination_date = models.DateField(blank=True, null=True)
+    salary = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
+    efficiency_score = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    total_orders_served = models.IntegerField(default=0)
+    average_order_time = models.IntegerField(blank=True, null=True)
+    customer_rating_avg = models.DecimalField(max_digits=3, decimal_places=2, default=0)
+    current_status = models.CharField(max_length=50)
+    managed_by = models.ForeignKey('self', on_delete=models.SET_NULL, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'restaurant_staff'
+
+
+class StaffShift(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    shift_name = models.CharField(max_length=100)
+    shift_type = models.CharField(max_length=50)
+    shift_start = models.TimeField()
+    shift_end = models.TimeField()
+    max_staff_count = models.IntegerField()
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'staff_shifts'
+
+
+class StaffShiftAssignment(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    staff = models.ForeignKey(RestaurantStaff, on_delete=models.CASCADE)
+    shift = models.ForeignKey(StaffShift, on_delete=models.CASCADE)
+    assignment_date = models.DateField()
+    actual_start_time = models.DateTimeField(blank=True, null=True)
+    actual_end_time = models.DateTimeField(blank=True, null=True)
+    status = models.CharField(max_length=50)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'staff_shift_assignments'
+
+
+class TableAssignment(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    staff = models.ForeignKey(RestaurantStaff, on_delete=models.CASCADE)
+    table = models.ForeignKey(RestaurantTable, on_delete=models.CASCADE)
+    shift_assignment = models.ForeignKey(StaffShiftAssignment, on_delete=models.CASCADE)
+    assignment_start = models.DateTimeField()
+    assignment_end = models.DateTimeField(blank=True, null=True)
+    status = models.CharField(max_length=50)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'table_assignments'
+
+
+class StaffPerformanceHistory(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    staff = models.ForeignKey(RestaurantStaff, on_delete=models.CASCADE)
+    metric_type = models.CharField(max_length=100)
+    metric_value = models.DecimalField(max_digits=10, decimal_places=2)
+    target_value = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
+    measured_at = models.DateTimeField()
+    period_type = models.CharField(max_length=50)
+    notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'staff_performance_history'
+
+
+class CommunicationGroup(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    group_type = models.CharField(max_length=50)
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True, null=True)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'communication_groups'
+
+
+class GroupMember(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    group = models.ForeignKey(CommunicationGroup, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    member_role = models.CharField(max_length=50)
+    joined_at = models.DateTimeField(auto_now_add=True)
+    left_at = models.DateTimeField(blank=True, null=True)
+    
+    class Meta:
+        db_table = 'group_members'
+
+
+class ChatSession(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    customer_user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='customer_sessions')
+    assigned_staff = models.ForeignKey(User, on_delete=models.SET_NULL, blank=True, null=True, related_name='staff_sessions')
+    session_type = models.CharField(max_length=50)
+    title = models.CharField(max_length=255)
+    status = models.CharField(max_length=50)
+    priority = models.IntegerField(default=1)
+    first_response_time = models.IntegerField(blank=True, null=True)
+    resolution_time = models.IntegerField(blank=True, null=True)
+    customer_satisfaction_rating = models.IntegerField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(blank=True, null=True)
+    closed_at = models.DateTimeField(blank=True, null=True)
+    
+    class Meta:
+        db_table = 'chat_sessions'
+
+
+class ChatMessage(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session = models.ForeignKey(ChatSession, on_delete=models.CASCADE)
+    sender = models.ForeignKey(User, on_delete=models.CASCADE)
+    recipient_entity_type = models.CharField(max_length=50)
+    recipient_entity_id = models.UUIDField()
+    message_content = models.TextField()
+    message_type = models.CharField(max_length=50)
+    priority = models.IntegerField(default=1)
+    is_edited = models.BooleanField(default=False)
+    edited_at = models.DateTimeField(blank=True, null=True)
+    read_receipts = models.JSONField(blank=True, null=True)
+    delivered_at = models.DateTimeField(blank=True, null=True)
+    sentiment_score = models.DecimalField(max_digits=3, decimal_places=2, blank=True, null=True)
+    like_count = models.IntegerField(default=0)
+    reply_count = models.IntegerField(default=0)
+    share_count = models.IntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'chat_messages'
+
+
+class Notification(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    recipient = models.ForeignKey(User, on_delete=models.CASCADE)
+    source_entity_id = models.UUIDField()
+    source_entity_type = models.CharField(max_length=50)
+    notification_type = models.CharField(max_length=50)
+    message = models.TextField()
+    is_read = models.BooleanField(default=False)
+    action_url = models.CharField(max_length=500, blank=True, null=True)
+    sent_at = models.DateTimeField(auto_now_add=True)
+    read_at = models.DateTimeField(blank=True, null=True)
+    
+    class Meta:
+        db_table = 'notifications'
+
+
+class CustomerLoyalty(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    customer_user = models.ForeignKey(User, on_delete=models.CASCADE)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    loyalty_tier = models.CharField(max_length=50)
+    points_balance = models.IntegerField(default=0)
+    lifetime_spend = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    total_orders = models.IntegerField(default=0)
+    visit_count = models.IntegerField(default=0)
+    first_visit_date = models.DateField(blank=True, null=True)
+    last_visit_date = models.DateField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'customer_loyalty'
+
+
+class LoyaltyReward(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    reward_name = models.CharField(max_length=255)
+    reward_type = models.CharField(max_length=50)
+    points_required = models.IntegerField()
+    free_menu_item = models.ForeignKey(MenuItem, on_delete=models.SET_NULL, blank=True, null=True)
+    discount_percentage = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True)
+    min_tier_required = models.CharField(max_length=50, blank=True, null=True)
+    is_active = models.BooleanField(default=True)
+    start_date = models.DateField(blank=True, null=True)
+    end_date = models.DateField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'loyalty_rewards'
+
+
+class RewardRedemption(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    loyalty = models.ForeignKey(CustomerLoyalty, on_delete=models.CASCADE)
+    reward = models.ForeignKey(LoyaltyReward, on_delete=models.CASCADE)
+    order = models.ForeignKey(Order, on_delete=models.CASCADE)
+    applied_by_user = models.ForeignKey(User, on_delete=models.CASCADE)
+    points_used = models.IntegerField()
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    redemption_status = models.CharField(max_length=50)
+    redemption_date = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'reward_redemptions'
+
+
+class ContentMedia(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    media_type = models.CharField(max_length=50)
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True, null=True)
+    media_url = models.CharField(max_length=500)
+    target_audience = models.CharField(max_length=100)
+    conversion_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    engagement_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    click_through_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    is_active = models.BooleanField(default=True)
+    start_date = models.DateField(blank=True, null=True)
+    end_date = models.DateField(blank=True, null=True)
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'content_media'
+
+
+class MediaPerformanceDaily(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    media = models.ForeignKey(ContentMedia, on_delete=models.CASCADE)
+    performance_date = models.DateField()
+    view_count = models.IntegerField(default=0)
+    engagement_count = models.IntegerField(default=0)
+    conversion_count = models.IntegerField(default=0)
+    click_count = models.IntegerField(default=0)
+    total_revenue = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'media_performance_daily'
+
+
+class Announcement(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    title = models.CharField(max_length=255)
+    body = models.TextField()
+    announcement_type = models.CharField(max_length=50)
+    target_audience = models.CharField(max_length=100)
+    audience_parameters = models.JSONField(blank=True, null=True)
+    start_date = models.DateField()
+    end_date = models.DateField(blank=True, null=True)
+    is_public = models.BooleanField(default=True)
+    view_count = models.IntegerField(default=0)
+    engagement_count = models.IntegerField(default=0)
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'announcements'
+
+
+class RestaurantDailySummary(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    summary_date = models.DateField()
+    total_orders = models.IntegerField(default=0)
+    total_revenue = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    average_order_value = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    customer_count = models.IntegerField(default=0)
+    peak_hour = models.TimeField(blank=True, null=True)
+    most_popular_item = models.ForeignKey(MenuItem, on_delete=models.SET_NULL, blank=True, null=True)
+    customer_satisfaction_score = models.DecimalField(max_digits=3, decimal_places=2, default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'restaurant_daily_summary'
