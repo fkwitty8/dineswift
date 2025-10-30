@@ -144,10 +144,6 @@ class Migration(migrations.Migration):
             name='updated_at',
             field=models.DateTimeField(auto_now=True),
         ),
-        migrations.AddIndex(
-            model_name='user',
-            index=django.contrib.postgres.indexes.GinIndex(fields=['communication_preferences'], name='idx_users_communication_prefs'),
-        ),
         migrations.AddField(
             model_name='booking',
             name='customer_user',

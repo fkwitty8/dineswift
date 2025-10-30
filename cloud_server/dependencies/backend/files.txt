@@ -1,5 +1,5 @@
-Django, //framework
-djangorestframework-simplejwt,// reat api
+ Django, //framework
+djangorestframework-simplejwt,// rest api
 django-postgres-extra,//for partitioning
 django-cors-headers//- Allows you to specify which domains can make requests to your Django application.
 - Essential for building APIs that need to be accessed from different domains.

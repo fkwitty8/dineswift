@@ -5,7 +5,7 @@ class Migration(migrations.Migration):
     dependencies = [
         ('cloud_api', '0003_booking_deliverybatch_kitchendisplayorder_order_and_more'),
     ]
-
+    
     operations = [
         # Delivery and kitchen optimization indexes (NEW - not in 0002)
         migrations.RunSQL(
@@ -96,30 +96,8 @@ class Migration(migrations.Migration):
             DROP INDEX IF EXISTS idx_user_roles_restaurant_active;
             """
         ),
-
-        # Performance optimization indexes for common queries (NEW - not in 0002)
-        migrations.RunSQL(
-            """
-            -- Menu performance optimization
-            CREATE INDEX IF NOT EXISTS idx_menu_items_active_optimized ON menu_items (menu_id, display_order) WHERE is_available = true;
-            
-            -- Order items performance optimization
-            CREATE INDEX IF NOT EXISTS idx_order_items_price_range ON order_items (unit_price) WHERE unit_price > 50;
-            
-            -- Restaurant table performance optimization
-            CREATE INDEX IF NOT EXISTS idx_tables_capacity_status ON restaurant_tables (capacity, table_status) WHERE table_status = 'available';
-            
-            -- Local server performance optimization
-            CREATE INDEX IF NOT EXISTS idx_local_servers_online ON local_servers (status, last_sync) WHERE status = 'online';
-            """,
-            reverse_sql="""
-            DROP INDEX IF EXISTS idx_menu_items_active_optimized;
-            DROP INDEX IF EXISTS idx_order_items_price_range;
-            DROP INDEX IF EXISTS idx_tables_capacity_status;
-            DROP INDEX IF EXISTS idx_local_servers_online;
-            """
-        ),
-
+        
+        
         # Additional composite indexes for better query performance (NEW - not in 0002)
         migrations.RunSQL(
             """
@@ -146,4 +124,30 @@ class Migration(migrations.Migration):
             DROP INDEX IF EXISTS idx_delivery_batches_composite;
             """
         ),
+
+        # Performance optimization indexes for common queries (NEW - not in 0002)
+        migrations.RunSQL(
+            """
+            -- Menu performance optimization
+            CREATE INDEX IF NOT EXISTS idx_menu_items_active_optimized ON menu_items (menu_id, display_order) WHERE is_available = true;
+            
+            -- Order items performance optimization
+            CREATE INDEX IF NOT EXISTS idx_order_items_price_range ON order_items (unit_price) WHERE unit_price > 50;
+            
+            -- Local server performance optimization
+            CREATE INDEX IF NOT EXISTS idx_local_servers_online ON local_servers (status, last_sync) WHERE status = 'online';
+
+            -- Restaurant table performance optimization
+            CREATE INDEX IF NOT EXISTS idx_tables_capacity_status ON restaurant_tables (capacity, table_status) WHERE table_status = 'available';
+            
+            """,
+            reverse_sql="""
+            DROP INDEX IF EXISTS idx_menu_items_active_optimized;
+            DROP INDEX IF EXISTS idx_order_items_price_range;
+            DROP INDEX IF EXISTS idx_tables_capacity_status;
+            DROP INDEX IF EXISTS idx_local_servers_online;
+            """
+        ),
+
+        
     ]
