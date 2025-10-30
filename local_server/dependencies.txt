@@ -1,0 +1,58 @@
+
+# Core Django
+Django
+djangorestframework
+django-cors-headers
+
+# Database
+psycopg2-binary
+
+#Supabase
+supabase
+
+# Encryption & Security
+cryptography
+django-encrypted-model-fields
+
+# ASGI/WebSocket support
+daphne
+channels
+channels-redis
+
+# Caching & Tasks
+celery
+redis
+django-redis
+django-celery-beat 
+django-celery-results
+
+# Environment variables
+python-dotenv
+
+#Authentication & Security
+PyJWT
+
+#Monitoring (optional for now)
+prometheus-client
+sentry-sdk
+
+#Production Server
+gunicorn
+whitenoise
+
+#Development/Testing 
+pytest
+pytest-django
+pytest-asyncio
+pytest-cov
+
+#logging
+structlog
+python-json-logger
+
+
+requests
+django-ratelimit
+factory-boy
+freezegun
+responses
