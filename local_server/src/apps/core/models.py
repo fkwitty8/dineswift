@@ -2,6 +2,8 @@ import uuid
 from django.db import models
 from django.db.models import JSONField  # FIXED: Modern import
 from django.utils import timezone
+from django.contrib.auth.models import AbstractUser
+from django.conf import settings
 
 class TimeStampedModel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -59,7 +61,12 @@ class ActivityLog(TimeStampedModel):
     module = models.CharField(max_length=20, choices=MODULES, db_index=True)
     action = models.CharField(max_length=100)
     details = JSONField(default=dict)
-    user_id = models.UUIDField(null=True, blank=True)
+    user = models.ForeignKey(
+            settings.AUTH_USER_MODEL,
+            on_delete=models.SET_NULL,
+            null=True,
+            blank=True
+            )
     correlation_id = models.UUIDField(default=uuid.uuid4, db_index=True)
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     
@@ -161,3 +168,17 @@ class HealthCheck(models.Model):
             models.Index(fields=['component', '-last_check']),
         ]
 
+class User(AbstractUser):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(
+        Restaurant, 
+        on_delete=models.CASCADE, 
+        null=True, 
+        blank=True,
+        related_name='users'
+    )
+
+    # Add custom fields here if needed
+
+    def __str__(self):
+        return self.username

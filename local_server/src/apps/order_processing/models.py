@@ -49,6 +49,14 @@ class OfflineOrder(TimeStampedModel):
     last_sync_attempt = models.DateTimeField(null=True, blank=True)
     sync_error = models.TextField(blank=True)
     
+    payment = models.ForeignKey(
+        'payment.Payment', 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True,
+        related_name='orders'
+    )
+    
     class Meta:
         db_table = 'offline_orders'
         indexes = [
@@ -71,3 +79,6 @@ class OrderCRDTState(TimeStampedModel):
     
     class Meta:
         db_table = 'order_crdt_states'
+        
+    def __str__(self):
+        return f"CRDT State for {self.order.local_order_id}"

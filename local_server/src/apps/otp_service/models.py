@@ -52,3 +52,6 @@ class OTP(TimeStampedModel):
         self.status = 'USED'
         self.verified_at = timezone.now()
         self.save()
+        
+    def __str__(self):
+        return f"OTP {self.otp_code} - {self.status}"

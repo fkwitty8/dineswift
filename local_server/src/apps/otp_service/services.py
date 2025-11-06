@@ -138,3 +138,14 @@ class OTPService:
         except Exception as e:
             logger.error(f'OTP cleanup failed: {str(e)}', exc_info=True)
             return 0
+        
+        
+        
+        
+        
+        
+        
+        """
+OTP Service
+Generate and verify OTPs for order pickup
+"""

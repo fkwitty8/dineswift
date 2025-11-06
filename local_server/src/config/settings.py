@@ -17,6 +17,9 @@ ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost').split(',')
 
 INSTALLED_APPS = [
     'daphne',  # Must be first for ASGI
+    
+    'apps.core',#must come first efor the django.contrib.admin',
+    
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -30,13 +33,16 @@ INSTALLED_APPS = [
     'channels',
     'django_celery_beat',
     'django_celery_results',
+    'django_filters',
     
     # Local apps
-    'apps.core',
+    
     'apps.menu_cache',
     'apps.order_processing',
     'apps.sync_manager',
     'apps.otp_service',
+    'apps.payment',
+    #'apps.billing',
 ]
 
 MIDDLEWARE = [
@@ -79,7 +85,7 @@ ASGI_APPLICATION = 'config.asgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('LOCAL_DB_NAME', 'dineswift_local'),
+        'NAME': os.getenv('LOCAL_DB_NAME', 'dineswift_local_test'),
         'USER': os.getenv('LOCAL_DB_USER', 'dineswift_user'),
         'PASSWORD': os.environ['LOCAL_DB_PASSWORD'],
         'HOST': os.getenv('LOCAL_DB_HOST', 'localhost'),
@@ -234,7 +240,7 @@ LOGGING = {
     'disable_existing_loggers': False,
     'formatters': {
         'json': {
-            '()': 'pythonjsonlogger.jsonlogger.JsonFormatter',
+            '()': 'pythonjsonlogger.json.JsonFormatter',
             'format': '%(asctime)s %(levelname)s %(name)s %(message)s'
         },
         'console': {
@@ -313,10 +319,43 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR.parent / 'media'
 
+
+CELERY_BEAT_SCHEDULE = {
+    # ... existing tasks ...
+    
+    'monitor-payments': {
+        'task': 'apps.billing.tasks.monitor_pending_payments',
+        'schedule': 120.0,  # Every 2 minutes
+    },
+    'expire-old-payments': {
+        'task': 'apps.billing.tasks.expire_old_payments',
+        'schedule': 600.0,  # Every 10 minutes
+    },
+}
+"""
+
+## 📝 **Summary: Two Payment Processing Paths**
+
+### **Path 1: Mobile Money (MTN MoMo)**
+```
+Django → Supabase Edge Function → MTN MoMo API → Customer Phone
+  ↓                                                     ↓
+Local DB ← Sync Status ← Supabase DB ← Webhook ← Customer Confirms
+```
+
+### **Path 2: Cryptocurrency**
+```
+Django → Blockchain Network → Customer Wallet
+  ↓              ↓
+Monitors TX → Counts Confirmations → Marks Complete
+
+"""
 # Internationalization
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
+
+AUTH_USER_MODEL = 'core.User'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
