@@ -1,0 +1,10 @@
+Django==5.2.7
+djangorestframework
+django-cors-headers
+channels
+python-dotenv
+python-decouple
+psycopg2-binary
+djangorestframework-simplejwt
+qrcode[pil]
+requests

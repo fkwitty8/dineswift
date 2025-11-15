@@ -163,3 +163,9 @@ CHANNEL_LAYERS = {
         'BACKEND': 'channels.layers.InMemoryChannelLayer',
     },
 }
+
+# Payment Gateway Settings
+MTN_API_KEY = config('MTN_API_KEY', default='test_mtn_key')
+MTN_BASE_URL = config('MTN_BASE_URL', default='https://sandbox.momodeveloper.mtn.com')
+AIRTEL_API_KEY = config('AIRTEL_API_KEY', default='test_airtel_key')
+AIRTEL_BASE_URL = config('AIRTEL_BASE_URL', default='https://openapiuat.airtel.africa')
