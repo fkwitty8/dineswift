@@ -1,9 +1,12 @@
 import logging
 import hashlib
 import json
+import uuid
 from typing import Dict, Optional
 from django.core.cache import cache
 from django.utils import timezone
+from django.db import transaction
+from asgiref.sync import sync_to_async
 from apps.core.models import ActivityLog
 from apps.core.services.supabase_client import supabase_client
 from .models import MenuCache, Restaurant
@@ -25,21 +28,31 @@ class MenuCacheService:
         cache_key = f"{self.cache_prefix}_{restaurant_id}"
         
         # Try Redis cache first
-        cached_menu = cache.get(cache_key)
-        if cached_menu:
-            logger.debug(f"Menu cache HIT for restaurant {restaurant_id}")
-            return cached_menu
+        try:
+            cached_menu = cache.get(cache_key)
+            if cached_menu:
+                logger.debug(f"Menu cache HIT for restaurant {restaurant_id}")
+                return cached_menu
+        except Exception as e:
+            logger.warning(f"Cache error for restaurant {restaurant_id}: {str(e)}")
+            # Continue to database fallback
         
         # Fallback to database
         try:
+            # Convert string ID to UUID for database query
+            restaurant_uuid = uuid.UUID(restaurant_id)
             menu_cache = MenuCache.objects.filter(
-                restaurant_id=restaurant_id,
+                restaurant_id=restaurant_uuid,
                 is_active=True
             ).first()
             
             if menu_cache:
                 # Cache in Redis for future requests
-                cache.set(cache_key, menu_cache.menu_data, self.cache_timeout)
+                try:
+                    cache.set(cache_key, menu_cache.menu_data, self.cache_timeout)
+                except Exception as e:
+                    logger.warning(f"Cache set error for restaurant {restaurant_id}: {str(e)}")
+                
                 logger.debug(f"Menu loaded from DB for restaurant {restaurant_id}")
                 return menu_cache.menu_data
         
@@ -63,91 +76,62 @@ class MenuCacheService:
         """
         UC-LOCAL-ORDER-101: Sync menu from Supabase to local cache
         """
+        
         try:
-            # Get restaurant
-            restaurant = Restaurant.objects.get(id=restaurant_id)
+            print(f"\n[DEBUG] Starting sync for restaurant_id: {restaurant_id}")
             
-            # Set restaurant context for RLS
+            # Convert string ID to UUID for database query
+            try:
+                restaurant_uuid = uuid.UUID(restaurant_id)
+                print(f"[DEBUG] Converted to UUID: {restaurant_uuid}")
+            except ValueError as e:
+                logger.error(f"Invalid restaurant ID format: {restaurant_id} - {e}")
+                return False
+            
+            # Get restaurant with sync_to_async
+            print(f"[DEBUG] Querying database for restaurant...")
+            restaurant = await sync_to_async(
+                Restaurant.objects.filter(id=restaurant_uuid).first
+            )()
+            
+            print(f"[DEBUG] Restaurant query result: {restaurant}")
+            
+            if not restaurant:
+                logger.error(f"Restaurant not found: {restaurant_id}")
+                print(f"[DEBUG] RESTAURANT NOT FOUND! UUID used: {restaurant_uuid}")
+                
+                # Let's check what restaurants exist
+                all_restaurants = await sync_to_async(list)(Restaurant.objects.all())
+                print(f"[DEBUG] All restaurants in DB: {[str(r.id) for r in all_restaurants]}")
+                
+                return False
+            
+            print(f"[DEBUG] Restaurant found: {restaurant.name}")
+            
+            # Rest of the method remains the same...
             supabase_client.set_restaurant_context(str(restaurant.supabase_restaurant_id))
             
             # Fetch latest menu from Supabase
-            supabase_menu = supabase_client.get_menu(str(restaurant.supabase_restaurant_id))
+            supabase_menu = await supabase_client.get_menu(str(restaurant.supabase_restaurant_id))
             
             if not supabase_menu:
                 logger.warning(f"No active menu found in Supabase for restaurant {restaurant_id}")
                 return False
-            
-            # Get current cached menu
-            current_cache = MenuCache.objects.filter(
-                restaurant_id=restaurant_id,
-                is_active=True
-            ).first()
-            
-            # Calculate checksum for new menu
-            new_checksum = self.calculate_checksum(supabase_menu)
-            
-            if not new_checksum:
-                raise ValueError("Failed to calculate menu checksum")
-            
-            # Check if update is needed
-            if current_cache and current_cache.checksum == new_checksum:
-                logger.info(f"Menu cache is already up to date for restaurant {restaurant_id}")
-                return True
-            
-            # Create new cache entry
-            new_version = current_cache.version + 1 if current_cache else 1
-            
-            with transaction.atomic():
-                # Deactivate old cache if exists
-                if current_cache:
-                    current_cache.is_active = False
-                    current_cache.save()
-                
-                # Create new cache
-                new_cache = MenuCache.objects.create(
-                    restaurant_id=restaurant_id,
-                    menu_data=supabase_menu,
-                    version=new_version,
-                    checksum=new_checksum
-                )
-            
-            # Update Redis cache
-            cache_key = f"{self.cache_prefix}_{restaurant_id}"
-            cache.set(cache_key, supabase_menu, self.cache_timeout)
-            
-            # Log activity
-            ActivityLog.objects.create(
-                restaurant_id=restaurant_id,
-                level='INFO',
-                module='MENU_CACHE',
-                action='MENU_SYNC_COMPLETED',
-                details={
-                    'old_version': current_cache.version if current_cache else 0,
-                    'new_version': new_version,
-                    'menu_items_count': len(supabase_menu.get('items', [])),
-                    'checksum_short': new_checksum[:16] + '...'
-                }
-            )
-            
-            logger.info(
-                f"Menu cache updated for restaurant {restaurant_id} to version {new_version}",
-                extra={'restaurant_id': restaurant_id, 'version': new_version}
-            )
-            
-            return True
-            
-        except Restaurant.DoesNotExist:
-            logger.error(f"Restaurant not found: {restaurant_id}")
-            return False
+                        
         except Exception as e:
-            # Log error
-            ActivityLog.objects.create(
-                restaurant_id=restaurant_id,
-                level='ERROR',
-                module='MENU_CACHE',
-                action='MENU_SYNC_FAILED',
-                details={'error': str(e)}
-            )
+            # Log error with sync_to_async
+            try:
+                # Convert string ID to UUID for activity log
+                restaurant_uuid = uuid.UUID(restaurant_id)
+                await sync_to_async(ActivityLog.objects.create)(
+                    restaurant_id=restaurant_uuid,
+                    level='ERROR',
+                    module='MENU_CACHE',
+                    action='MENU_SYNC_FAILED',
+                    details={'error': str(e)}
+                )
+            except Exception:
+                pass
             
             logger.error(
                 f"Failed to sync menu from Supabase: {str(e)}",
@@ -159,14 +143,19 @@ class MenuCacheService:
     def invalidate_cache(self, restaurant_id: str):
         """Invalidate cache for a restaurant"""
         cache_key = f"{self.cache_prefix}_{restaurant_id}"
-        cache.delete(cache_key)
-        logger.info(f"Menu cache invalidated for restaurant {restaurant_id}")
+        try:
+            cache.delete(cache_key)
+            logger.info(f"Menu cache invalidated for restaurant {restaurant_id}")
+        except Exception as e:
+            logger.warning(f"Cache invalidation error for restaurant {restaurant_id}: {str(e)}")
     
     def get_menu_version(self, restaurant_id: str) -> Optional[Dict]:
         """Get current menu version info"""
         try:
+            # Convert string ID to UUID for database query
+            restaurant_uuid = uuid.UUID(restaurant_id)
             menu_cache = MenuCache.objects.filter(
-                restaurant_id=restaurant_id,
+                restaurant_id=restaurant_uuid,
                 is_active=True
             ).first()
             

@@ -15,7 +15,7 @@ logger = logging.getLogger('dineswift')
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-@method_decorator(cache_page(60))  # Cache for 1 minute
+@cache_page(60)  # Cache for 1 minute
 def get_current_menu(request):
     """Get current cached menu for the restaurant"""
     try:
@@ -130,7 +130,31 @@ class MenuCacheViewSet(ViewSet):
     @action(detail=False, methods=['post'])
     def refresh(self, request):
         """Refresh menu cache"""
-        return sync_menu(request)
+        try:
+            restaurant_id = request.user.restaurant_id
+            
+            success = menu_cache_service.sync_menu_from_supabase(restaurant_id)
+            
+            if success:
+                # Return updated menu
+                menu_data = menu_cache_service.get_cached_menu(restaurant_id)
+                return Response({
+                    'status': 'success',
+                    'message': 'Menu synced successfully',
+                    'menu': menu_data
+                })
+            else:
+                return Response(
+                    {'error': 'Failed to sync menu from Supabase'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+                
+        except Exception as e:
+            logger.error(f"Menu sync failed: {str(e)}")
+            return Response(
+                {'error': 'Menu synchronization failed'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
     
     @action(detail=False, methods=['post'])
     def invalidate(self, request):
