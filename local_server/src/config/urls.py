@@ -27,9 +27,10 @@ urlpatterns = [
     # Prometheus metrics
     path('metrics/', make_wsgi_app()),
     
+    
     # API endpoints - NOW ALL DEFINED!
+    path('api/menu-cache/', include('apps.menu_cache.urls')),
     path('api/orders/', include('apps.order_processing.urls')),
-    path('api/menu/', include('apps.menu_cache.urls')),
     path('api/otp/', include('apps.otp_service.urls')),
     path('api/payments/', include('apps.payment.urls')),
     path('api/sync/', include('apps.sync_manager.urls')),

@@ -1,15 +1,16 @@
 from rest_framework import serializers
 from .models import MenuCache
+from django.core.validators import MinValueValidator
 
 class MenuItemSerializer(serializers.Serializer):
     """Serializer for individual menu items (nested in menu data)"""
-    id = serializers.UUIDField()
-    name = serializers.CharField()
+    id = serializers.UUIDField(error_messages={'invalid': 'Must be a valid UUID.'})
+    name = serializers.CharField(error_messages={'blank': 'Name cannot be blank.'})
     description = serializers.CharField(required=False, allow_blank=True)
-    price = serializers.DecimalField(max_digits=10, decimal_places=2)
-    category = serializers.CharField()
+    price = serializers.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)])
+    category = serializers.CharField(error_messages={'blank': 'Category cannot be blank.'})
     is_available = serializers.BooleanField(default=True)
-    preparation_time = serializers.IntegerField(min_value=0)
+    preparation_time = serializers.IntegerField(min_value=0, required=False, default=0)
     ingredients = serializers.ListField(child=serializers.CharField(), required=False)
     allergens = serializers.ListField(child=serializers.CharField(), required=False)
     image_url = serializers.URLField(required=False, allow_null=True)
@@ -54,6 +55,7 @@ class MenuSyncSerializer(serializers.Serializer):
     
     def validate(self, attrs):
         # If no restaurant_id provided, use the authenticated user's restaurant
-        if 'restaurant_id' not in attrs and self.context.get('request'):
-            attrs['restaurant_id'] = self.context['request'].user.restaurant_id
+        request = self.context.get('request')
+        if 'restaurant_id' not in attrs and request and hasattr(request.user, 'restaurant_id'):
+            attrs['restaurant_id'] = request.user.restaurant_id
         return attrs

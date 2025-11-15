@@ -36,7 +36,8 @@ class MenuCache(TimeStampedModel):
         return hashlib.sha256(menu_string.encode()).hexdigest()
     
     def save(self, *args, **kwargs):
-        if not self.checksum:
+        # ALWAYS recalculate checksum for data integrity
+        if self.menu_data:
             self.checksum = self.calculate_checksum()
         super().save(*args, **kwargs)
     
