@@ -1,0 +1,32 @@
+name: dineswiftapp
+description: A Flutter app for restaurant orders, bookings, and QR-based table scanning.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.2.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.5
+  qr_flutter: ^4.1.0               # QR code generation
+  qr_code_scanner_plus: ^2.0.13    # QR scanning, maintained version
+  intl: ^0.20.2                     # Latest stable
+  provider: ^6.1.5+1                # State management
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0             # Latest lint rules
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/food/burger.png
+    - assets/images/food/juice.png
+    - assets/images/food/pizza.png
+    - assets/images/icons/scan.png
+    - assets/images/icons/table.png
