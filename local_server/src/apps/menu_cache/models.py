@@ -15,7 +15,7 @@ class MenuCache(TimeStampedModel):
     Local cache of restaurant menus from Supabase
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE,null=True)
     menu_data = JSONField()
     version = models.IntegerField(default=1)
     checksum = models.CharField(max_length=64)  # SHA-256
