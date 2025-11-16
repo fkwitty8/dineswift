@@ -5,10 +5,7 @@ from .models import (
     KitchenDisplayOrder, Order, SalesOrder, OrderItem, Booking, OrderItemRejection,
     SupplyOrder, DeliveryPartner, DeliveryTracking, BillingRecord, Transaction,
     CustomerAccount, PaymentMethod, StaffShift, StaffShiftAssignment,
-    TableAssignment, StaffPerformanceHistory, CommunicationGroup, GroupMember,
-    ChatSession, ChatMessage, Notification, CustomerLoyalty, LoyaltyReward,
-    RewardRedemption, ContentMedia, MediaPerformanceDaily, Announcement,
-    RestaurantDailySummary, DigitalTicket
+    TableAssignment, StaffPerformanceHistory, CommunicationGroup
 )
 
 admin.site.register(User)
@@ -43,15 +40,3 @@ admin.site.register(StaffShiftAssignment)
 admin.site.register(TableAssignment)
 admin.site.register(StaffPerformanceHistory)
 admin.site.register(CommunicationGroup)
-admin.site.register(GroupMember)
-admin.site.register(ChatSession)
-admin.site.register(ChatMessage)
-admin.site.register(Notification)
-admin.site.register(CustomerLoyalty)
-admin.site.register(LoyaltyReward)
-admin.site.register(RewardRedemption)
-admin.site.register(ContentMedia)
-admin.site.register(MediaPerformanceDaily)
-admin.site.register(Announcement)
-admin.site.register(RestaurantDailySummary)
-admin.site.register(DigitalTicket)

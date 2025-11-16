@@ -1,18 +1,20 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import OrderViewSet
-from .booking_views import BookingViewSet
-from .account_views import CustomerAccountViewSet
-from .qr_views import resolve_qr_code
-from .menu_views import get_menu, add_menu_item
-from .restaurant_views import restaurant_menu, restaurant_table_info
-from .payment_views import validate_payment, verify_transaction
-from .ticket_views import generate_ticket, checkin_ticket, ticket_status
+from .views import (
+    OrderViewSet, BookingViewSet, CustomerAccountViewSet,
+    resolve_qr_code, get_menu, add_menu_item,
+    restaurant_menu, restaurant_table_info,
+    validate_payment, verify_transaction,
+    generate_ticket, checkin_ticket, ticket_status,
+    MenuManagerViewSet, MenuItemManagerViewSet
+)
 
 router = DefaultRouter()
 router.register(r'orders', OrderViewSet)
 router.register(r'bookings', BookingViewSet)
 router.register(r'accounts', CustomerAccountViewSet)
+router.register(r'manager/menus', MenuManagerViewSet, basename='manager-menus')
+router.register(r'manager/menu-items', MenuItemManagerViewSet, basename='manager-menu-items')
 
 urlpatterns = [
     path('api/', include(router.urls)),
