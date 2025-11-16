@@ -7,3 +7,4 @@ from .restaurant_views import restaurant_menu, restaurant_table_info
 from .payment_views import validate_payment, verify_transaction
 from .ticket_views import generate_ticket, checkin_ticket, ticket_status
 from .manager_views import MenuManagerViewSet, MenuItemManagerViewSet
+from .order_stats_views import order_count

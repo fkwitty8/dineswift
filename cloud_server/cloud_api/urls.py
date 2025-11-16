@@ -6,7 +6,7 @@ from .views import (
     restaurant_menu, restaurant_table_info,
     validate_payment, verify_transaction,
     generate_ticket, checkin_ticket, ticket_status,
-    MenuManagerViewSet, MenuItemManagerViewSet
+    MenuManagerViewSet, MenuItemManagerViewSet, order_count
 )
 
 router = DefaultRouter()
@@ -28,4 +28,5 @@ urlpatterns = [
     path('api/tickets/generate/', generate_ticket, name='generate_ticket'),
     path('api/tickets/checkin/<str:qr_code>/', checkin_ticket, name='checkin_ticket'),
     path('api/tickets/status/<str:qr_code>/', ticket_status, name='ticket_status'),
+    path('api/orders/count/', order_count, name='order_count'),
 ]
