@@ -10,57 +10,73 @@ from asgiref.sync import sync_to_async
 from apps.core.models import ActivityLog
 from apps.core.services.supabase_client import supabase_client
 from .models import MenuCache, Restaurant
-
+    
 logger = logging.getLogger('dineswift')
 
 class MenuCacheService:
     """
+    High-performance menu caching service for single 
+    
     Service for managing menu caching operations
     UC-LOCAL-ORDER-101: Cache Menu Data
     """
+      
     
     def __init__(self):
         self.cache_timeout = 3600  # 1 hour
-        self.cache_prefix = "menu"
+        self.cache_key = "current_menu"  # Single cache key for the restaurant
+        self._restaurant_id = None
+        self._redis_available = True  # Start optimistic
     
-    def get_cached_menu(self, restaurant_id: str) -> Optional[Dict]:
-        """Get menu from cache with fallback to database"""
-        cache_key = f"{self.cache_prefix}_{restaurant_id}"
-        
-        # Try Redis cache first
-        try:
-            cached_menu = cache.get(cache_key)
-            if cached_menu:
-                logger.debug(f"Menu cache HIT for restaurant {restaurant_id}")
-                return cached_menu
-        except Exception as e:
-            logger.warning(f"Cache error for restaurant {restaurant_id}: {str(e)}")
-            # Continue to database fallback
-        
-        # Fallback to database
-        try:
-            # Convert string ID to UUID for database query
-            restaurant_uuid = uuid.UUID(restaurant_id)
-            menu_cache = MenuCache.objects.filter(
-                restaurant_id=restaurant_uuid,
-                is_active=True
-            ).first()
+    def get_restaurant_id(self):
+        """Get and cache the single restaurant ID"""
+        if self._restaurant_id is None:
+            restaurant = Restaurant.objects.filter(is_active=True).first()
+            print(restaurant)
+            self._restaurant_id = str(restaurant.id) if restaurant else None
+        return self._restaurant_id
+    
+    def get_current_menu(self) -> Optional[Dict]:
+        """
+        Get current menu - optimized for high traffic
+        Uses cache-first approach with single key
+        """
+        # Try cache first
+        if self._redis_available:
+            try:
+                cached_menu = cache.get(self.cache_key)
+                if cached_menu:
+                    return cached_menu
+            except Exception as e:
+                logger.warning(f"Cache read error: {str(e)}")
+                self._redis_available = False
             
-            if menu_cache:
-                # Cache in Redis for future requests
-                try:
-                    cache.set(cache_key, menu_cache.menu_data, self.cache_timeout)
-                except Exception as e:
-                    logger.warning(f"Cache set error for restaurant {restaurant_id}: {str(e)}")
+        # Cache miss - get from database
+        restaurant_id = self.get_restaurant_id()
+        if not restaurant_id:
+            logger.error("No active restaurant found")
+            return None
+        try:
+            menu_cache = MenuCache.objects.filter(
+                restaurant_id=restaurant_id,
+                is_active=True
+            ).select_related('restaurant').first()
+            
+            if menu_cache and menu_cache.menu_data:
+                # Cache the result
+                if self._redis_available:
+                    try:
+                        cache.set(self.cache_key, menu_cache.menu_data, self.cache_timeout)
+                    except Exception as e:
+                        logger.warning(f"Cache write error: {str(e)}")
                 
-                logger.debug(f"Menu loaded from DB for restaurant {restaurant_id}")
                 return menu_cache.menu_data
         
         except Exception as e:
-            logger.error(f"Failed to get cached menu: {str(e)}", exc_info=True)
+            logger.error(f"Database error getting menu: {str(e)}")
         
-        logger.warning(f"No menu found for restaurant {restaurant_id}")
         return None
+    
     
     def calculate_checksum(self, menu_data: Dict) -> str:
         """Calculate SHA-256 checksum for menu data integrity"""

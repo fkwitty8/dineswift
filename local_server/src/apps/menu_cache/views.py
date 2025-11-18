@@ -3,6 +3,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny
 from rest_framework.viewsets import ViewSet
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
@@ -14,14 +15,14 @@ from .models import MenuCache
 logger = logging.getLogger('dineswift')
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 @cache_page(60)  # Cache for 1 minute
 def get_current_menu(request):
     """Get current cached menu for the restaurant"""
     try:
-        restaurant_id = request.user.restaurant_id
         
-        menu_data = menu_cache_service.get_cached_menu(restaurant_id)
+        
+        menu_data = menu_cache_service.get_current_menu()
         
         if not menu_data:
             return Response(
@@ -30,7 +31,6 @@ def get_current_menu(request):
             )
         
         return Response({
-            'restaurant_id': restaurant_id,
             'menu': menu_data,
             'cached': True
         })
