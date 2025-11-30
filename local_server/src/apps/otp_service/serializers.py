@@ -1,5 +1,8 @@
 from rest_framework import serializers
 from .models import OTP
+from django.db import DatabaseError
+import logging 
+logger = logging.getLogger('dineswift')
 
 class OTPGenerateSerializer(serializers.Serializer):
     """Serializer for OTP generation requests"""
@@ -15,11 +18,15 @@ class OTPGenerateSerializer(serializers.Serializer):
             try:
                 order = OfflineOrder.objects.get(
                     id=value,
-                    restaurant_id=request.user.restaurant_id
+                    restaurant_id=str(request.user.restaurant_id)
                 )
                 return value
             except OfflineOrder.DoesNotExist:
                 raise serializers.ValidationError("Order not found")
+            except DatabaseError:
+                # Log the error for production, but raise a generic error for the user/test
+                logger.error("Database error during order validation lookup.") 
+                raise serializers.ValidationError("A temporary service error occurred. Please try again.")
         return value
 
 class OTPVerifySerializer(serializers.Serializer):
@@ -36,19 +43,15 @@ class OTPSerializer(serializers.ModelSerializer):
     """Serializer for OTP model"""
     order_local_id = serializers.CharField(source='order.local_order_id', read_only=True)
     is_expired = serializers.SerializerMethodField()
-    remaining_attempts = serializers.SerializerMethodField()
-    
     class Meta:
         model = OTP
         fields = [
             'id', 'order_id', 'order_local_id', 'otp_code', 'status',
-            'expires_at', 'verified_at', 'attempts', 'max_attempts',
-            'is_expired', 'remaining_attempts', 'created_at'
+            'expires_at', 'verified_at', 
+            'is_expired',  'created_at'
         ]
         read_only_fields = ['id', 'created_at']
     
     def get_is_expired(self, obj):
         return not obj.is_valid()
     
-    def get_remaining_attempts(self, obj):
-        return max(0, obj.max_attempts - obj.attempts)

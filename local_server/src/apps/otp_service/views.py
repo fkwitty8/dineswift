@@ -19,7 +19,11 @@ def generate_otp(request):
         serializer.is_valid(raise_exception=True)
         
         service = OTPService()
-        result = service.generate_otp(serializer.validated_data['order_id'])
+        result = service.generate_otp(
+            serializer.validated_data['order_id'],
+            user_id=str(request.user.id),                  # Pass user ID
+            restaurant_id=str(request.user.restaurant_id) # Pass restaurant ID
+       )
         
         return Response({
             'success': True,
@@ -46,7 +50,9 @@ def verify_otp(request):
         service = OTPService()
         result = service.verify_otp(
             serializer.validated_data['order_id'],
-            serializer.validated_data['otp_code']
+            serializer.validated_data['otp_code'],
+            user_id=str(request.user.id),                  # Pass user ID
+            restaurant_id=str(request.user.restaurant_id) # Pass restaurant ID
         )
         
         return Response(result)
@@ -68,7 +74,7 @@ def get_order_otp(request, order_id):
         
         order = OfflineOrder.objects.get(
             id=order_id,
-            restaurant_id=request.user.restaurant_id
+            restaurant_id = str(request.user.restaurant_id)
         )
         
         # Get active OTP for this order

@@ -13,6 +13,13 @@ class OfflineOrder(TimeStampedModel):
         ('CANCELLED', 'Cancelled'),
     ]
     
+    ORDER_TYPES=[
+        ('DINE_IN', 'dine_in'),
+        ('TAKE_AWAY', 'take_away'),
+        ('DELIVERY', 'delivery'),
+        ('SYS_RECONCILIATION','sys_reconciliation')
+    ]
+    
     SYNC_STATUS_CHOICES = [
         ('PENDING_SYNC', 'Pending Sync'),
         ('SYNCING', 'Syncing'),
@@ -23,16 +30,19 @@ class OfflineOrder(TimeStampedModel):
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
-    local_order_id = models.CharField(max_length=50, unique=True)  # Human-readable ID
+    local_order_id = models.CharField(max_length=50, unique=True)  # Human-readable ID, this can be a customer name the order belongs
     supabase_order_id = models.UUIDField(null=True, blank=True)
     
     # Order details
     table_id = models.UUIDField(null=True, blank=True)
+    table_number=models.TextField(blank=True)
     customer_id = models.UUIDField(null=True, blank=True)
     order_items = JSONField()  # List of order items with details
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     special_instructions = models.TextField(blank=True)
+    order_type = models.CharField(max_length=30, choices=ORDER_TYPES, default='DINE_IN')  # e.g., DINE_IN, TAKEAWAY, DELIVERY, SYSTEM_RECONCILIATION 
+    metadata = JSONField(null=True) #special info aout order recorded under rear condition y the system
     
     # Status tracking
     order_status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')

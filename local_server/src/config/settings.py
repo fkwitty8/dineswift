@@ -159,6 +159,7 @@ CORS_ALLOW_CREDENTIALS = True
 # Channels (WebSockets)
 CHANNEL_LAYERS = {
     'default': {
+        #'BACKEND': 'channels.layers.InMemoryChannelLayer',  # Development
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
             "hosts": [os.getenv('REDIS_URL', 'redis://localhost:6379/0')],
@@ -167,6 +168,9 @@ CHANNEL_LAYERS = {
         },
     },
 }
+
+# Server identifier for multi-server environments,loging
+SERVER_ID = 'main' # imay not need it now
 
 # Caching
 CACHES = {

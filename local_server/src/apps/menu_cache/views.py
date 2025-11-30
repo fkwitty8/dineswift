@@ -18,27 +18,44 @@ logger = logging.getLogger('dineswift')
 @permission_classes([AllowAny])
 @cache_page(60)  # Cache for 1 minute
 def get_current_menu(request):
-    """Get current cached menu for the restaurant"""
+    """
+    Get the current cached menu for a restaurant using query parameters.
+    URL Format: /api/menu-cache/current/?restaurant_id=<UUID>&table_number=<INT>
+    """
     try:
+        # 1. Retrieve required parameters from the query string
+        restaurant_id = request.query_params.get('restaurant_id')
+        table_number = request.query_params.get('table_number')
         
+        # 2. Validation: restaurant_id is mandatory for menu retrieval
+        if not restaurant_id:
+            return Response(
+                {'error': 'A valid restaurant_id is required in the query parameters.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         
-        menu_data = menu_cache_service.get_current_menu()
+        # 3. Retrieve menu data using the dedicated service
+        # The service layer should handle its own internal caching/DB lookup based on restaurant_id
+        menu_data = menu_cache_service.get_cached_menu(restaurant_id)
         
         if not menu_data:
+            logger.warning(f"Menu not available for restaurant_id: {restaurant_id}")
             return Response(
-                {'error': 'No menu available. Please sync menu first.'},
+                {'error': 'No active menu available for this restaurant. Please check restaurant setup.'},
                 status=status.HTTP_404_NOT_FOUND
             )
         
+        # 4. Return response including the table_number for order context
         return Response({
+            'table_number': table_number, # Captured from QR code link
             'menu': menu_data,
-            'cached': True
+            'cached': True 
         })
         
     except Exception as e:
-        logger.error(f"Failed to get current menu: {str(e)}")
+        logger.error(f"Failed to get current menu for {restaurant_id}: {str(e)}", exc_info=True)
         return Response(
-            {'error': 'Failed to retrieve menu'},
+            {'error': 'Failed to retrieve menu due to an internal server error'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
