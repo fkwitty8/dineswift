@@ -1,9 +1,12 @@
 import uuid
+import logging
 from django.db import models
 from django.db.models import JSONField  # FIXED: Modern import
 from django.utils import timezone
 from django.contrib.auth.models import AbstractUser
 from django.conf import settings
+# Initialize logger for the model file
+logger = logging.getLogger('dineswift')
 
 class TimeStampedModel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -22,14 +25,110 @@ class Restaurant(TimeStampedModel):
     local_config = JSONField(default=dict)
     is_active = models.BooleanField(default=True, db_index=True)
     
+    @property
+    def has_crypto_addresses(self):
+        """Quick check if the restaurant has any crypto addresses configured."""
+        # Uses the reverse relationship manager 'crypto_addresses' defined on the ForeignKey
+        return self.crypto_addresses.exists()
+    
+    
+    def get_crypto_address(self, currency_code: str) -> str | None:
+        """
+        Retrieves the public address for a given cryptocurrency.
+        Returns:
+            The wallet address string, or None if not found.
+        """
+        try:
+            
+            RestaurantCryptoAddress = self.crypto_addresses.model 
+            
+            return self.crypto_addresses.get(currency=currency_code.upper()).address
+        except RestaurantCryptoAddress.DoesNotExist:
+            # Log a warning. This is expected if a restaurant hasn't set up the wallet yet.
+            logger.warning(
+                f"Restaurant {self.id} ({self.name}) attempted to retrieve "
+                f"unconfigured crypto address for currency: {currency_code}."
+            )
+            return None
+    
+        except Exception as e:
+            # Log a critical error if something went wrong outside of 'not found'
+            logger.error(
+                f"Unexpected error retrieving crypto address for restaurant {self.id} "
+                f"and currency {currency_code}: {e}", 
+                exc_info=True # Include traceback for debugging
+            )
+            return None
+    
+    # Meta and String Representation
     class Meta:
         db_table = 'restaurants'
+        verbose_name = 'Restaurant'
+        verbose_name_plural = 'Restaurants'
         indexes = [
             models.Index(fields=['supabase_restaurant_id', 'is_active']),
         ]
-    
+        
     def __str__(self):
         return f"{self.name}"
+    
+
+#Define Cryptocurrency Choices
+# These are the crypto currencies supported by the payment gateway and to be expanded with time
+CRYPTO_CURRENCY_CHOICES = [
+    ('BTC', 'Bitcoin'),
+    ('ETH', 'Ethereum'),
+    ('SUI', 'Sui'),
+    ('SOL', 'Solana'),
+]
+
+class RestaurantCryptoAddress(models.Model):
+    """
+    Stores the specific public wallet address for a restaurant for each supported cryptocurrency.
+    This separates financial data from the core Restaurant configuration.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    
+    # ForeignKey to the Restaurant model
+    restaurant = models.ForeignKey(
+        'core.Restaurant',
+        on_delete=models.CASCADE,
+        related_name='crypto_addresses',
+        help_text="The restaurant that owns this wallet address."
+    )
+    
+    # The cryptocurrency type (e.g., BTC, ETH, SUI, SOL)
+    currency = models.CharField(
+        max_length=5,
+        choices=CRYPTO_CURRENCY_CHOICES,
+        help_text="The specific cryptocurrency for this address."
+    )
+    
+    # The public wallet address (or Lightning Invoice identifier)
+    address = models.CharField(
+        max_length=255,
+        unique=False,
+        help_text="The public wallet address for receiving funds."
+    )
+    
+    #Additional configurations specific to the crypto network
+    network_config = models.JSONField(
+        default=dict,
+        blank=True,
+        null=True
+    )
+
+    class Meta:
+        db_table = 'restaurant_crypto_addresses'
+        verbose_name = 'Restaurant Crypto Address'
+        # Crucial Constraint: A restaurant can only have ONE address per currency
+        unique_together = (('restaurant', 'currency'),)
+        indexes = [
+            models.Index(fields=['restaurant', 'currency']),
+        ]
+        
+    def __str__(self):
+        return f"{self.restaurant.name} - {self.get_currency_display()} Wallet"
 
 class ActivityLog(TimeStampedModel):
     LOG_LEVELS = [
@@ -48,6 +147,10 @@ class ActivityLog(TimeStampedModel):
         ('BILLING', 'Billing'),
         ('AUTH', 'Authentication'),
         ('CELERY', 'Celery Tasks'),
+        ('PAYMENT', 'Payment Processing'),  
+        ('INVOICE', 'Invoice Management'),   
+        ('WALLET', 'Wallet Service'),        
+        ('ACCOUNTING', 'Accounting'), 
     ]
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

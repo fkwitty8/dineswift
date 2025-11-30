@@ -17,10 +17,12 @@ class MenuCache(TimeStampedModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE,null=True)
     menu_data = JSONField()
-    version = models.IntegerField(default=1)
+    version = models.IntegerField(default=1) #i have to drop the column sync_version to avoid the redundance with version
     checksum = models.CharField(max_length=64)  # SHA-256
     is_active = models.BooleanField(default=True)
     last_synced = models.DateTimeField(auto_now=True)
+    created_at =models.DateTimeField(auto_now=True)
+    updated_at=models.DateTimeField(auto_now=True)
     
     class Meta:
         db_table = 'menu_cache'

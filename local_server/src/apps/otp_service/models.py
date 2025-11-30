@@ -2,7 +2,6 @@ import uuid
 import secrets
 from django.db import models
 from django.utils import timezone
-from datetime import timedelta
 from apps.core.models import TimeStampedModel
 
 class OTP(TimeStampedModel):  
@@ -19,14 +18,13 @@ class OTP(TimeStampedModel):
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='ACTIVE')
     expires_at = models.DateTimeField(db_index=True)
     verified_at = models.DateTimeField(null=True, blank=True)
-    attempts = models.IntegerField(default=0)
-    max_attempts = models.IntegerField(default=5)
     
     class Meta:
         db_table = 'otps'
         indexes = [
             models.Index(fields=['order_id', 'status']),
             models.Index(fields=['otp_code', 'status', 'expires_at']),
+            models.Index(fields=['order_id', 'status', 'otp_code'])
         ]
     
     def is_valid(self):
@@ -36,18 +34,8 @@ class OTP(TimeStampedModel):
             self.status = 'EXPIRED'
             self.save()
             return False
-        if self.attempts >= self.max_attempts:
-            self.status = 'REVOKED'
-            self.save()
-            return False
         return True
-    
-    def increment_attempts(self):
-        self.attempts += 1
-        if self.attempts >= self.max_attempts:
-            self.status = 'REVOKED'
-        self.save()
-    
+     
     def mark_used(self):
         self.status = 'USED'
         self.verified_at = timezone.now()

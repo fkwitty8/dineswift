@@ -17,8 +17,8 @@ class OTPService:
     def __init__(self, expiry_minutes=15):
         self.expiry_minutes = expiry_minutes
     
-    def generate_otp(self, order_id: str) -> dict:
-        #Generate a 6-digit OTP for order verification
+    def generate_otp(self, order_id: str, user_id: str, restaurant_id: str) -> dict:
+        """Generate a 6-digit OTP for order verification"""
         
         try:
             with transaction.atomic():
@@ -40,6 +40,19 @@ class OTPService:
                     expires_at=expires_at
                 )
                 
+                
+                ActivityLog.objects.create(
+                    level='INFO',
+                    module='OTP_SERVICE',
+                    action='OTP_GENERATED',
+                    user_id=user_id,             # Set Foreign Key field
+                    restaurant_id=restaurant_id, # Set Foreign Key field
+                    details={
+                        'order_id': str(order_id),
+                        'otp_id': str(otp.id)
+                    }
+                )
+                
                 logger.info(
                     f'OTP generated for order {order_id}',
                     extra={'order_id': order_id, 'otp_id': str(otp.id)}
@@ -55,22 +68,14 @@ class OTPService:
             logger.error(f'Failed to generate OTP: {str(e)}', exc_info=True)
             raise
     
-    def verify_otp(self, order_id: str, otp_code: str) -> dict:
+    def verify_otp(self, order_id: str, otp_code: str, user_id: str, restaurant_id: str) -> dict:
        #Verify OTP for order pickup
-        
         try:
-            # Find active OTP
-            try:
-                otp = OTP.objects.get(
-                    order_id=order_id,
-                    otp_code=otp_code,
-                    status='ACTIVE'
-                )
-            except OTP.DoesNotExist:
-                return {
-                    'valid': False,
-                    'message': 'Invalid or expired OTP'
-                }
+            otp = OTP.objects.get(
+                order_id=order_id,
+                otp_code=otp_code,
+                status='ACTIVE'
+            )
             
             # Check if valid
             if not otp.is_valid():
@@ -79,42 +84,39 @@ class OTPService:
                     'message': 'OTP has expired or been revoked'
                 }
             
-            # Verify code match
-            if otp.otp_code != otp_code:
-                otp.increment_attempts()
+            # Mark as used
+            with transaction.atomic(): # Use a transaction for safety
+                otp.mark_used()
                 
-                remaining_attempts = otp.max_attempts - otp.attempts
+                ActivityLog.objects.create(
+                    level='INFO',
+                    module='OTP_SERVICE',
+                    action='OTP_VERIFIED',
+                    # Set Foreign Key fields using the '_id' suffix
+                    user_id=user_id,             
+                    restaurant_id=restaurant_id, 
+                    details={
+                        'order_id': str(order_id),
+                        'otp_id': str(otp.id)
+                        # user_id and restaurant_id are now logged via the FK fields
+                    }
+                )
+                
+                logger.info(
+                    f'OTP verified successfully for order {order_id}',
+                    extra={'order_id': order_id}
+                )
                 
                 return {
+                    'valid': True,
+                    'message': 'OTP verified successfully',
+                    'verified_at': otp.verified_at.isoformat()
+                }
+        except OTP.DoesNotExist:
+                return {
                     'valid': False,
-                    'message': f'Invalid OTP. {remaining_attempts} attempts remaining',
-                    'remaining_attempts': remaining_attempts
-                }
-            
-            # Mark as used
-            otp.mark_used()
-            
-            ActivityLog.objects.create(
-                level='INFO',
-                module='OTP_SERVICE',
-                action='OTP_VERIFIED',
-                details={
-                    'order_id': order_id,
-                    'otp_id': str(otp.id)
-                }
-            )
-            
-            logger.info(
-                f'OTP verified successfully for order {order_id}',
-                extra={'order_id': order_id}
-            )
-            
-            return {
-                'valid': True,
-                'message': 'OTP verified successfully',
-                'verified_at': otp.verified_at.isoformat()
-            }
-            
+                    'message': 'The OTP is either used, invalid, or expired'
+                }       
         except Exception as e:
             logger.error(f'OTP verification error: {str(e)}', exc_info=True)
             return {
@@ -122,7 +124,7 @@ class OTPService:
                 'message': 'Verification failed',
                 'error': str(e)
             }
-    
+        
     def cleanup_expired_otps(self):
         #Cleanup expired OTPs (run as scheduled task)
         
