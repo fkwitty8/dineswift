@@ -23,7 +23,6 @@ class OrderItemSerializer(serializers.Serializer):
         attrs['total_price'] = Decimal(quantity) * price
         return attrs
 
-# In your serializer.py, update the OrderCreateSerializer:
 class OrderCreateSerializer(serializers.Serializer):
     items = OrderItemSerializer(many=True, min_length=1)
     table_id = serializers.UUIDField(required=False, allow_null=True)
@@ -35,6 +34,8 @@ class OrderCreateSerializer(serializers.Serializer):
         default='cash'
     )
     customer_phone = serializers.CharField(required=False, allow_blank=True)
+    total_amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=True)
+    tax_amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=True)
     
     def validate(self, attrs):
         # Only validate phone for momo payments
@@ -42,6 +43,31 @@ class OrderCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError({
                 'customer_phone': 'Phone number is required for Momo payments'
             })
+            
+        # Get the already validated item data from the nested serializer
+        validated_items = attrs['items'] 
+        
+        calculated_subtotal = Decimal('0.00')
+        
+        # Sum the total_price calculated by the nested OrderItemSerializer
+        for item in validated_items:
+            # We must access the calculated 'total_price' from the validated item attrs
+            calculated_subtotal += item['total_price'] 
+        
+        provided_total_amount = attrs['total_amount']
+        
+        # Compare the expected total (calculated items + provided tax) with the provided total amount
+        # Use quantize for precise Decimal comparison
+        if calculated_subtotal.quantize(Decimal('0.01')) != provided_total_amount.quantize(Decimal('0.01')):
+            raise serializers.ValidationError(
+                {'total_amount': f"The provided total amount ({provided_total_amount}) does not match the calculated amount ({calculated_subtotal}) based on item totals and tax."}
+            )
+            
+        # Add the calculated subtotal to attrs for use in the create method
+        attrs['calculated_subtotal'] = calculated_subtotal
+        
+        # ------------------------------------------------------------------
+        
         return attrs
 
 class OrderSerializer(serializers.ModelSerializer):

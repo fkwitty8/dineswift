@@ -8,6 +8,8 @@ from apps.core.models import ActivityLog,Restaurant
 from apps.core.services.supabase_client import supabase_client
 from .models import Invoice, Payment, PaymentAllocation, CustomerWallet, AccountingEntry
 import uuid
+from .exceptions import InsufficientFundsError, InvalidPendingCaptureError,WalletError
+
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -398,6 +400,7 @@ class PaymentService:
     
     def _validate_cash_payment_physical(self, payment: Payment):
         """Physical cash validation by staff"""
+        #we shall have to check whether the cash is valid or not
         # This is where actual cash validation happens
         # Check for counterfeit, count accuracy, etc.
         # Could integrate with cash drawer systems
@@ -543,7 +546,7 @@ class PaymentService:
             entry_date=timezone.now().date(),
             value_date=timezone.now().date(),
             description=f"Payment received via {payment.get_gateway_display()} for Order {invoice.order.id}",
-            created_b=payment.customer_user
+            created_by=payment.customer_user
         )
         
         logger.info(
@@ -585,7 +588,7 @@ class PaymentService:
             )
                 
             if not wallet.can_afford(payment.amount):
-                raise ValueError("Insufficient wallet balance or wallet inactive")
+                raise ValueError("insufficient wallet balance or wallet inactive")
             
             # Deduct funds immediately
             wallet.deduct_funds(
@@ -893,8 +896,12 @@ class WalletService:
     """Service for customer wallet operations with proper accounting"""
     
     def add_funds(self, user_id: str, restaurant_id: str, amount: Decimal, 
-                  reference_type: str, reference_id: str, description: str) -> dict:
-        """Add funds to wallet with proper accounting entries"""
+                  reference_type: str, reference_id: str, description: str, 
+                  correlation_id: str = None) -> dict:
+        """Add funds to wallet with proper accounting entries and audit logging."""
+        
+        correlation_id = correlation_id if correlation_id else uuid.uuid4()
+        
         try:
             with transaction.atomic():
                 wallet, created = CustomerWallet.objects.get_or_create(
@@ -903,7 +910,7 @@ class WalletService:
                     wallet_type='PREPAID',
                     defaults={
                         'available_balance': amount,
-                        'currency': 'X-SWIFT'
+                        'currency': 'UGX'
                     }
                 )
                 
@@ -915,26 +922,57 @@ class WalletService:
                         action='WALLET_CREATED',
                         user_id=user_id,
                         restaurant_id=restaurant_id,
+                        correlation_id=correlation_id,
                         details={
                             'wallet_id': str(wallet.id),
                             'initial_balance': float(amount)
                         }
                     )
                 else:
+                    
+                    if wallet.is_closed():
+                        # Return specific error code to the API
+                        return {'allowed': False, 'reason': 'WALLET_CLOSED', 'message': 'Wallet is permanently closed. Contact support.'}
+                        
+                    if wallet.is_suspended():
+                        # Wallet can be viewed, but deposits might be blocked
+                        return {'allowed': False, 'reason': 'WALLET_SUSPENDED', 'message': 'Wallet services are temporarily suspended.'}
+
+                    if not wallet.is_active():
+                        return {'allowed': True, 'reason': 'OK', 'message': 'Wallet is ready for deposits.'}
+                        
                     wallet.add_funds(
-                        amount=amount,
-                        reference_type=reference_type,
-                        reference_id=reference_id,
-                        description=description
-                    )
-                
-                # Create accounting entry for wallet deposit
+                                amount=amount,
+                                reference_type=reference_type,
+                                reference_id=reference_id,
+                                description=description
+                            )
+                        
+                # Create accounting entry
                 self._create_wallet_deposit_accounting_entry(
                     restaurant_id=restaurant_id,
                     amount=amount,
                     reference_id=reference_id,
-                    description=description
+                    description=description,
+                    user_id=user_id
                 )
+                
+                # Success Audit Log for Fund Addition
+                if not created: # Only log addition if not a creation event
+                    ActivityLog.objects.create(
+                        level='INFO',
+                        module='WALLET',
+                        action='FUNDS_ADDED',
+                        user_id=user_id,
+                        restaurant_id=restaurant_id,
+                        correlation_id=correlation_id,
+                        details={
+                            'wallet_id': str(wallet.id),
+                            'amount': float(amount),
+                            'ref_id': reference_id,
+                            'new_balance': float(wallet.available_balance)
+                        }
+                    )
                 
                 return {
                     'success': True,
@@ -943,11 +981,20 @@ class WalletService:
                 }
                 
         except Exception as e:
-            logger.error(f"Failed to add funds to wallet: {str(e)}")
+            # Failure Audit Log
+            ActivityLog.objects.create(
+                level='ERROR',
+                module='WALLET',
+                action='ADD_FUNDS_FAILED',
+                user_id=user_id,
+                restaurant_id=restaurant_id,
+                correlation_id=correlation_id,
+                details={'error': str(e), 'amount': float(amount), 'ref_id': reference_id}
+            )
+            logger.error(f"Failed to add funds to wallet: {str(e)}", exc_info=True)
             return {'success': False, 'error': str(e)}
     
-    def _create_wallet_deposit_accounting_entry(self, restaurant_id: str, amount: Decimal, 
-                                              reference_id: str, description: str):
+    def _create_wallet_deposit_accounting_entry(self, restaurant_id: str, amount: Decimal, reference_id: str, description: str,user_id: str):
         """Create accounting entry for wallet deposit"""
         AccountingEntry.objects.create(
             restaurant_id=restaurant_id,
@@ -957,10 +1004,312 @@ class WalletService:
             currency='UGX',
             reference_type='DEPOSIT',
             reference_id=reference_id,
-            description=f"Wallet deposit: {description}"
-            # created_by field removed since it doesn't exist in model
+            description=f"Wallet deposit: {description}",
+            created_by=user_id
         )
      
+    def get_wallet_balance(self, user_id, restaurant_id, wallet_type='LOYALTY'):
+        """
+        Retrieves the available, pending, and total balance for a specific wallet.
+        """
+        try:
+            wallet = CustomerWallet.objects.get(
+                user_id=user_id,
+                restaurant_id=restaurant_id,
+                wallet_type=wallet_type
+            )
+            
+            return {
+                'wallet_type': wallet.wallet_type,
+                'available_balance': wallet.available_balance,
+                'pending_balance': wallet.pending_balance,
+                'total_balance': wallet.total_balance, # Uses the @property from the model
+                'currency': wallet.currency,
+                'status': wallet.status,
+            }
+
+        except CustomerWallet.DoesNotExist:
+            # Handle case where the wallet doesn't exist (e.g., return zero balance or raise a specific error)
+            return {
+                'available_balance': 0,
+                'pending_balance': 0,
+                'total_balance': 0,
+                'currency': 'X-SWIFT',
+                'status': 'NOT_FOUND',
+            }
+
+        except Exception as e:
+            # Log the error and raise or return a standard failure response
+            raise e
+    
+    def _get_wallet_for_user(self, user_id, restaurant_id, wallet_type):
+        """Helper to safely retrieve a specific wallet."""
+        try:
+            return CustomerWallet.objects.get(
+                user_id=user_id,
+                restaurant_id=restaurant_id,
+                wallet_type=wallet_type
+            )
+        except CustomerWallet.DoesNotExist:
+            logger.warning(
+                f"Wallet not found for user {user_id}, restaurant {restaurant_id}, type {wallet_type}"
+            )
+            raise WalletError("Customer wallet not found.")
+
+    def authorize_order_payment(self, user_id, restaurant_id, order_id, amount: Decimal, correlation_id: str = None) -> bool:
+        """Orchestrates reserving funds for a new order with audit logging."""
+        
+        correlation_id = correlation_id if correlation_id else uuid.uuid4()
+        
+        try:
+            amount = Decimal(amount)
+            wallet = self._get_wallet_for_user(user_id, restaurant_id, wallet_type='PREPAID')
+            
+            wallet.authorize_funds(
+                amount=amount,
+                reference_type='ORDER',
+                reference_id=str(order_id),
+                description=f"Order authorization for #{order_id}"
+            )
+            
+            # SUCCESS Audit Log
+            ActivityLog.objects.create(
+                level='INFO',
+                module='WALLET',
+                action='AUTHORIZATION_SUCCESS',
+                user_id=user_id,
+                restaurant_id=restaurant_id,
+                correlation_id=correlation_id,
+                details={
+                    'wallet_id': str(wallet.id), 
+                    'order_id': str(order_id), 
+                    'amount': float(amount),
+                    'pending_balance': float(wallet.pending_balance)
+                }
+            )
+            logger.info(f"Authorized {amount} for order {order_id} on wallet {wallet.id}")
+            return True
+        
+        except InsufficientFundsError as e:
+            # FAILURE Audit Log (Specific Business Error)
+            ActivityLog.objects.create(
+                level='WARNING',
+                module='WALLET',
+                action='AUTHORIZATION_FAILED',
+                user_id=user_id,
+                restaurant_id=restaurant_id,
+                correlation_id=correlation_id,
+                details={'order_id': str(order_id), 'amount': float(amount), 'error': str(e)}
+            )
+            logger.error(f"Authorization failed for order {order_id}: {e}")
+            raise e 
+        except Exception as e:
+            # FAILURE Audit Log (Catch-all)
+            ActivityLog.objects.create(
+                level='CRITICAL',
+                module='WALLET',
+                action='AUTHORIZATION_CRITICAL_FAILURE',
+                user_id=user_id,
+                restaurant_id=restaurant_id,
+                correlation_id=correlation_id,
+                details={'order_id': str(order_id), 'error': str(e)}
+            )
+            logger.error(f"Wallet authorization failed unexpectedly for order {order_id}: {e}", exc_info=True)
+            raise WalletError("An internal error occurred during authorization.")
+    
+    def capture_order_payment(self, user_id, restaurant_id, order_id, amount: Decimal, correlation_id: str = None) -> bool:
+        """Orchestrates finalizing the payment (CAPTURE) with audit logging."""
+        
+        correlation_id = correlation_id if correlation_id else uuid.uuid4()
+        
+        try:
+            amount = Decimal(amount)
+            wallet = self._get_wallet_for_user(user_id, restaurant_id, wallet_type='PREPAID')
+            
+            wallet.capture_funds(
+                amount=amount,
+                reference_type='ORDER',
+                reference_id=str(order_id),
+                description=f"Order payment capture for #{order_id}"
+            )
+            
+            # SUCCESS Audit Log
+            ActivityLog.objects.create(
+                level='INFO',
+                module='WALLET',
+                action='CAPTURE_SUCCESS',
+                user_id=user_id,
+                restaurant_id=restaurant_id,
+                correlation_id=correlation_id,
+                details={
+                    'wallet_id': str(wallet.id), 
+                    'order_id': str(order_id), 
+                    'amount': float(amount),
+                    'pending_balance_after': float(wallet.pending_balance)
+                }
+            )
+            logger.info(f"Captured {amount} for order {order_id} on wallet {wallet.id}")
+            return True
+            
+        except InvalidPendingCaptureError as e:
+            # FAILURE Audit Log (Specific Business Error)
+            ActivityLog.objects.create(
+                level='ERROR',
+                module='WALLET',
+                action='CAPTURE_FAILED',
+                user_id=user_id,
+                restaurant_id=restaurant_id,
+                correlation_id=correlation_id,
+                details={'order_id': str(order_id), 'amount': float(amount), 'error': str(e)}
+            )
+            logger.warning(f"Capture failed for order {order_id} due to invalid pending amount: {e}")
+            raise e
+        except Exception as e:
+            # FAILURE Audit Log (Catch-all)
+            ActivityLog.objects.create(
+                level='CRITICAL',
+                module='WALLET',
+                action='CAPTURE_CRITICAL_FAILURE',
+                user_id=user_id,
+                restaurant_id=restaurant_id,
+                correlation_id=correlation_id,
+                details={'order_id': str(order_id), 'error': str(e)}
+            )
+            logger.error(f"Wallet capture failed unexpectedly for order {order_id}: {e}", exc_info=True)
+            raise WalletError("An internal error occurred during capture.")
+    
+    def release_order_authorization(self, user_id, restaurant_id, order_id, amount: Decimal, correlation_id: str = None) -> bool:
+        """Orchestrates releasing the reserved funds back to the customer with audit logging."""
+        
+        correlation_id = correlation_id if correlation_id else uuid.uuid4()
+        
+        try:
+            amount = Decimal(amount)
+            wallet = self._get_wallet_for_user(user_id, restaurant_id, wallet_type='PREPAID')
+            
+            wallet.release_funds(
+                amount=amount,
+                reference_type='ORDER_CANCEL',
+                reference_id=str(order_id),
+                description=f"Order cancellation funds release for #{order_id}"
+            )
+            
+            # SUCCESS Audit Log
+            ActivityLog.objects.create(
+                level='INFO',
+                module='WALLET',
+                action='RELEASE_SUCCESS',
+                user_id=user_id,
+                restaurant_id=restaurant_id,
+                correlation_id=correlation_id,
+                details={
+                    'wallet_id': str(wallet.id), 
+                    'order_id': str(order_id), 
+                    'amount': float(amount),
+                    'available_balance_after': float(wallet.available_balance)
+                }
+            )
+            logger.info(f"Released {amount} for cancelled order {order_id} on wallet {wallet.id}")
+            return True
+            
+        except InvalidPendingCaptureError as e:
+            # FAILURE Audit Log (Specific Business Error)
+            ActivityLog.objects.create(
+                level='ERROR',
+                module='WALLET',
+                action='RELEASE_FAILED',
+                user_id=user_id,
+                restaurant_id=restaurant_id,
+                correlation_id=correlation_id,
+                details={'order_id': str(order_id), 'amount': float(amount), 'error': str(e)}
+            )
+            logger.error(f"Release failed for order {order_id} due to invalid pending amount: {e}")
+            raise e
+        except Exception as e:
+            # FAILURE Audit Log (Catch-all)
+            ActivityLog.objects.create(
+                level='CRITICAL',
+                module='WALLET',
+                action='RELEASE_CRITICAL_FAILURE',
+                user_id=user_id,
+                restaurant_id=restaurant_id,
+                correlation_id=correlation_id,
+                details={'order_id': str(order_id), 'error': str(e)}
+            )
+            logger.error(f"Wallet release failed unexpectedly for order {order_id}: {e}", exc_info=True)
+            raise WalletError("An internal error occurred during release.")
+    
+    def process_refund(self, user_id, restaurant_id, refund_id, amount: Decimal, original_payment_ref: str, wallet_type='PREPAID', correlation_id: str = None) -> bool:
+        """
+        Orchestrates crediting funds back to the customer's wallet (REFUND) with audit logging.
+        """
+        
+        correlation_id = correlation_id if correlation_id else uuid.uuid4()
+        
+        try:
+            amount = Decimal(amount)
+            wallet = self._get_wallet_for_user(user_id, restaurant_id, wallet_type)
+            
+            # Call atomic model method (refund_funds)
+            wallet.refund_funds(
+                amount=amount,
+                reference_type='REFUND',
+                reference_id=str(refund_id),
+                original_payment_ref=original_payment_ref,
+                description=f"Processing refund ID {refund_id}"
+            )
+            
+            # SUCCESS Audit Log
+            ActivityLog.objects.create(
+                level='INFO',
+                module='WALLET',
+                action='FUNDS_REFUNDED',
+                user_id=user_id,
+                restaurant_id=restaurant_id,
+                correlation_id=correlation_id,
+                details={
+                    'wallet_id': str(wallet.id),
+                    'refund_id': str(refund_id),
+                    'amount': float(amount),
+                    'original_ref': original_payment_ref,
+                    'new_balance': float(wallet.available_balance)
+                }
+            )
+            
+            logger.info(
+                f"Successfully processed refund {refund_id} of {amount} to wallet {wallet.id}",
+                extra={'user_id': user_id, 'refund_id': refund_id, 'original_ref': original_payment_ref}
+            )
+            return True
+            
+        except WalletError as e:
+            # FAILURE Audit Log (Specific Business Error)
+            ActivityLog.objects.create(
+                level='ERROR',
+                module='WALLET',
+                action='REFUND_FAILED',
+                user_id=user_id,
+                restaurant_id=restaurant_id,
+                correlation_id=correlation_id,
+                details={'refund_id': str(refund_id), 'error': str(e), 'amount': float(amount)}
+            )
+            logger.error(f"Refund processing failed for ID {refund_id}: {e}")
+            raise e
+            
+        except Exception as e:
+            # FAILURE Audit Log (Catch-all)
+            ActivityLog.objects.create(
+                level='CRITICAL',
+                module='WALLET',
+                action='REFUND_CRITICAL_FAILURE',
+                user_id=user_id,
+                restaurant_id=restaurant_id,
+                correlation_id=correlation_id,
+                details={'refund_id': str(refund_id), 'error': str(e), 'amount': float(amount)}
+            )
+            logger.error(f"Unexpected error during refund processing for ID {refund_id}: {e}", exc_info=True)
+            raise WalletError("An internal error occurred during refund processing.")
+    
 # Service instances
 invoice_service = InvoiceService()
 payment_service = PaymentService()
