@@ -6,7 +6,11 @@ from apps.core.models import TimeStampedModel
 from django.utils import timezone
 from decimal import Decimal
 
-from datetime import timedelta
+from django.db import models, transaction
+
+# Import custom exceptions and WalletTransaction model here
+from .exceptions import InsufficientFundsError, MaxBalanceExceededError,RefundError, InactiveWalletError, InvalidPendingCaptureError,InvalidAmountError
+
 from apps.core.models import ActivityLog
 
 
@@ -354,13 +358,7 @@ class AccountingEntry(TimeStampedModel):
     internal_note = models.TextField(blank=True)
     
     # Adding created_by for audit trail
-    created_by = models.ForeignKey(
-        'core.User',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='accounting_entries'
-    )
+    created_by = models.UUIDField(null=True, blank=True)
     
     class Meta:
         db_table = 'accounting_entries'
@@ -409,7 +407,7 @@ class CustomerWallet(TimeStampedModel):
     
     # Wallet properties
     wallet_type = models.CharField(max_length=20, choices=WALLET_TYPE_CHOICES, default='LOYALTY')
-    currency = models.CharField(max_length=3, default='X-SWIFT')
+    currency = models.CharField(max_length=8, default='X-SWIFT')
     is_refundable = models.BooleanField(default=True)
     
     # Limits
@@ -442,6 +440,119 @@ class CustomerWallet(TimeStampedModel):
     def can_afford(self, amount):
         return self.available_balance >= amount and self.status == 'ACTIVE'
     
+    def is_active(self):
+        return self.status == 'ACTIVE'
+    
+    def is_suspended(self): 
+        return self.status == 'SUSPENDED'   
+    
+    def is_closed(self):
+        return self.status == 'CLOSED'
+    
+    @transaction.atomic
+    def authorize_funds(self, amount: Decimal, reference_type: str, reference_id: str, description: str):
+        """
+        Reserves funds by moving them from available_balance to pending_balance.
+        Creates an AUTHORIZATION transaction record.
+        """
+        # Enforcing business rules using helper functions
+        if self.is_suspended():
+            # Prevent any new transaction, even if funds are available
+            raise InactiveWalletError("Wallet is suspended and cannot process new authorizations.")
+        
+        if self.is_closed():
+            # Prevent any transaction
+            raise InactiveWalletError("Wallet is permanently closed.")
+            
+        if not self.is_active():
+            # Catch any other non-active state (or just use the first two checks)
+            raise InactiveWalletError("Wallet is not active.")
+            
+        if not self.can_afford(amount): # can_afford checks available_balance and status
+            # Raise custom exception for service layer to catch
+            raise InsufficientFundsError("Insufficient funds or wallet inactive for authorization.")
+        
+        if amount <= Decimal('0'):
+            raise InvalidAmountError("Authorization amount must be positive.")
+
+        # Update Balances
+        self.available_balance -= amount
+        self.pending_balance += amount
+        self.save(update_fields=['available_balance', 'pending_balance'])
+        
+        # Create Transaction Log (Authorization - Net change is 0 on available balance)
+        WalletTransaction.objects.create(
+            wallet=self,
+            transaction_type='AUTHORIZATION',
+            amount=amount, # Amount reserved
+            running_balance=self.available_balance, # Use available balance as reference
+            reference_type=reference_type,
+            reference_id=reference_id,
+            description=f"Funds reserved for {description}"
+        )
+        return True
+
+    @transaction.atomic
+    def capture_funds(self, amount: Decimal, reference_type: str, reference_id: str, description: str):
+        """
+        Finalizes an authorized transaction by removing the amount from pending_balance.
+        Creates a CAPTURE transaction record (final deduction).
+        """
+        if self.status != 'ACTIVE':
+            raise InactiveWalletError("Cannot capture funds: wallet is inactive.")
+            
+        if self.pending_balance < amount:
+            # Raise custom exception
+            raise InvalidPendingCaptureError(f"Capture amount {amount} exceeds pending balance {self.pending_balance}.")
+        
+        #  Update Balances
+        # Funds were already deducted from available in authorize_funds.
+        # We only need to remove the pending hold.
+        self.pending_balance -= amount
+        self.save(update_fields=['pending_balance'])
+    
+        # Create Transaction Log (Capture)
+        WalletTransaction.objects.create(
+            wallet=self,
+            transaction_type='CAPTURE',
+            amount=-amount, # Captured amount is a negative entry against the wallet
+            running_balance=self.available_balance, # Available balance remains the same as after Auth
+            reference_type=reference_type,
+            reference_id=reference_id,
+            description=f"Funds captured for {description}"
+        )
+        return True
+
+    @transaction.atomic
+    def release_funds(self, amount: Decimal, reference_type: str, reference_id: str, description: str):
+        """
+        Releases reserved funds back to the available_balance (e.g., cancelled order).
+        Creates a RELEASE transaction record.
+        """
+        if self.status != 'ACTIVE':
+            raise InactiveWalletError("Cannot release funds: wallet is inactive.")
+            
+        if self.pending_balance < amount:
+            # Raise custom exception
+            raise InvalidPendingCaptureError(f"Release amount {amount} exceeds pending balance {self.pending_balance}.")
+
+        # Update Balances: available up, pending down
+        self.available_balance += amount
+        self.pending_balance -= amount
+        self.save(update_fields=['available_balance', 'pending_balance'])
+        
+        # Create Transaction Log (Release - Positive movement into available)
+        WalletTransaction.objects.create(
+            wallet=self,
+            transaction_type='RELEASE',
+            amount=amount, # Amount released
+            running_balance=self.available_balance, # Final available balance after release
+            reference_type=reference_type,
+            reference_id=reference_id,
+            description=f"Reserved funds released for {description}"
+        )
+        return True
+        
     def deduct_funds(self, amount, reference_type, reference_id, description):
         """Deduct funds from wallet and create transaction"""
         if not self.can_afford(amount):
@@ -462,14 +573,25 @@ class CustomerWallet(TimeStampedModel):
         )
         
         return True
-    
+        
     def add_funds(self, amount, reference_type, reference_id, description):
         """Add funds to wallet and create transaction"""
         if amount <= 0:
-            raise ValueError("Amount must be positive")
+            raise RefundError("Amount must be positive")
         
-        self.available_balance += amount
-        self.save()
+        new_balance = self.available_balance + amount
+    
+        # Check the wallet have a maximum limit defined?
+        if self.max_balance is not None and self.max_balance > Decimal('0'):
+            # Check  the new balance exceed that limit?
+            if new_balance > self.max_balance:
+                raise MaxBalanceExceededError(
+                    f"Deposit of {amount} would result in a balance of {new_balance}, "
+                    f"exceeding the maximum limit of {self.max_balance}."
+                )
+                
+        self.available_balance = new_balance
+        self.save(update_fields=['available_balance'])
         
         # Create wallet transaction
         WalletTransaction.objects.create(
@@ -484,6 +606,43 @@ class CustomerWallet(TimeStampedModel):
         
         return True
 
+    @transaction.atomic
+    def refund_funds(self, amount: Decimal, original_reference_id: str, description: str):
+        """
+        Adds funds back to the available_balance and creates a REFUND transaction./used for 
+        """
+        if amount <= Decimal('0'):
+            raise ValueError("Refund amount must be positive.")
+
+        # temprary new Balances: 
+        new_balance = self.available_balance + amount
+    
+        # Check the wallet have a maximum limit defined?
+        if self.max_balance is not None and self.max_balance > Decimal('0'):
+            # Check  the new balance exceed that limit?
+            if new_balance > self.max_balance:
+                raise MaxBalanceExceededError(
+                    f"Deposit of {amount} would result in a balance of {new_balance}, "
+                    f"exceeding the maximum limit of {self.max_balance}."
+                )
+                
+        self.available_balance = new_balance
+        self.save(update_fields=['available_balance'])
+
+        # Create Transaction Log (Refund - Positive entry)
+        WalletTransaction.objects.create(
+            wallet=self,
+            transaction_type='REFUND',
+            amount=amount, # Positive amount returned to the customer
+            running_balance=self.available_balance,
+            reference_type='ORDER_REFUND',
+            reference_id=original_reference_id,
+            description=f"Refund issued for order reference {original_reference_id}: {description}"
+        )
+        return True
+
+
+
 class WalletTransaction(TimeStampedModel):
     """Immutable ledger for wallet transactions"""
     TRANSACTION_TYPE_CHOICES = [
@@ -493,6 +652,9 @@ class WalletTransaction(TimeStampedModel):
         ('REFUND', 'Refund'),
         ('ADJUSTMENT', 'Adjustment'),
         ('EXPIRY', 'Expiry'),
+        ('AUTHORIZATION', 'Authorization'),
+        ('CAPTURE', 'Capture'),
+        ('RELEASE', 'Release'),
     ]
     
     STATUS_CHOICES = [

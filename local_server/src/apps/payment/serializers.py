@@ -1,519 +1,891 @@
+# serializers.py
 from rest_framework import serializers
+from rest_framework.validators import UniqueTogetherValidator
 from decimal import Decimal
+import uuid
 from django.utils import timezone
-from .models import  CustomerWallet, Invoice, Payment, PaymentAllocation
+from django.core.validators import MinValueValidator
+from django.db import transaction
 
-class InvoiceCreateSerializer(serializers.Serializer):
-    """Serializer for invoice creation"""
-    order_id = serializers.UUIDField()
-    amount = serializers.DecimalField(
+from .models import (
+    Invoice, Payment, PaymentAllocation, 
+    AccountingEntry, CustomerWallet, WalletTransaction
+)
+from apps.core.models import Restaurant
+from apps.order_processing.models import OfflineOrder
+
+
+# ====================== BASE SERIALIZERS ======================
+
+class TimestampSerializerMixin(serializers.Serializer):
+    """Mixin for timestamp fields"""
+    created_at = serializers.DateTimeField(read_only=True)
+    updated_at = serializers.DateTimeField(read_only=True)
+
+
+class UUIDSerializerMixin(serializers.Serializer):
+    """Mixin for UUID fields"""
+    id = serializers.UUIDField(read_only=True, default=uuid.uuid4)
+
+
+# ====================== INVOICE SERIALIZERS ======================
+
+class InvoiceAmountBreakdownSerializer(serializers.Serializer):
+    """Serializer for invoice amount breakdown validation"""
+    subtotal_amount = serializers.DecimalField(
         max_digits=12, 
-        decimal_places=2, 
-        min_value=Decimal('0.01'),
-        error_messages={
-            'min_value': 'Amount must be greater than 0.00'
-        }
+        decimal_places=2,
+        validators=[MinValueValidator(0)]
     )
     tax_amount = serializers.DecimalField(
         max_digits=12, 
-        decimal_places=2, 
-        min_value=Decimal('0.00'),
-        default=Decimal('0.00')
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        default=0
     )
     service_fee = serializers.DecimalField(
         max_digits=12, 
-        decimal_places=2, 
-        min_value=Decimal('0.00'),
-        default=Decimal('0.00')
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        default=0
     )
     discount_amount = serializers.DecimalField(
         max_digits=12, 
-        decimal_places=2, 
-        min_value=Decimal('0.00'),
-        default=Decimal('0.00')
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        default=0
     )
-    currency = serializers.CharField(default='UGX', max_length=3)
-    due_date = serializers.DateTimeField(required=False)
-
-    def validate(self, attrs):
-        # Validate that total amount is positive after calculations
-        subtotal = attrs['amount']
-        tax = attrs.get('tax_amount', Decimal('0.00'))
-        service_fee = attrs.get('service_fee', Decimal('0.00'))
-        discount = attrs.get('discount_amount', Decimal('0.00'))
-        
-        total_amount = subtotal + tax + service_fee - discount
-        
-        if total_amount <= Decimal('0.00'):
-            raise serializers.ValidationError({
-                'total_amount': 'Total amount must be greater than 0.00 after calculations'
-            })
-        
-        # Set due_date if not provided (default to 24 hours from now)
-        if not attrs.get('due_date'):
-            attrs['due_date'] = timezone.now() + timezone.timedelta(hours=24)
-        
-        return attrs
 
 
-class PaymentInitiateSerializer(serializers.Serializer):
-    """Serializer for payment initiation with enhanced validation"""
-    invoice_id = serializers.UUIDField()
-    payment_method = serializers.ChoiceField(
-        choices=[
-            ('momo', 'Mobile Money'),
-            ('visa', 'Visa Card'),
-            ('mastercard', 'Mastercard'),
-            ('cash', 'Cash'),
-            ('wallet', 'Customer Wallet'),
-            ('crypto', 'Cryptocurrency'),
-            ('x_swift_stable_coin', 'X-Swift Stable Coin')
+class InvoiceCreateSerializer(UUIDSerializerMixin, TimestampSerializerMixin):
+    """Serializer for creating invoices"""
+    order_id = serializers.UUIDField(required=True)
+    restaurant_id = serializers.UUIDField(required=True)
+    subtotal_amount = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=True
+    )
+    tax_amount = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=True
+    )
+    service_fee = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=True
+    )
+    discount_amount = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=True
+    )
+    total_amount = serializers.DecimalField(
+        max_digits=10, decimal_places=2, read_only=True
+    )
+    class Meta:
+        model = Invoice
+        fields = [
+            'id', 'order_id', 'restaurant_id', 'subtotal_amount', 
+            'tax_amount', 'service_fee', 'discount_amount',
+            'created_at', 'updated_at'
         ]
-    )
-    payment_method_id = serializers.UUIDField(
-        required=False,
-        help_text="Required for wallet payments, optional for cards"
-    )
-    customer_phone = serializers.CharField(
-        required=False,
-        max_length=20,
-        help_text="Required for Momo payments, must start with 256"
-    )
-    customer_email = serializers.EmailField(
-        required=False,
-        help_text="Optional for receipt delivery"
-    )
     
     def validate(self, attrs):
-        payment_method = attrs.get('payment_method')
-        customer_phone = attrs.get('customer_phone')
-        payment_method_id = attrs.get('payment_method_id')
-        invoice_id = attrs.get('invoice_id')
-
-        # Validate invoice exists
+        # Validate order exists and belongs to restaurant
         try:
-            invoice = Invoice.objects.get(id=invoice_id)
-            attrs['invoice'] = invoice
-        except Invoice.DoesNotExist:
-            raise serializers.ValidationError({
-                'invoice_id': 'Invoice not found'
-            })
-
-        # Momo validation
-        if payment_method == 'momo':
-            if not customer_phone:
-                raise serializers.ValidationError({
-                    'customer_phone': 'Phone number is required for Momo payments'
-                })
-            if customer_phone and not customer_phone.startswith('256'):
-                raise serializers.ValidationError({
-                    'customer_phone': 'Phone number must start with 256 for Uganda'
-                })
-            if customer_phone and len(customer_phone) != 12:
-                raise serializers.ValidationError({
-                    'customer_phone': 'Phone number must be 12 digits (including 256 prefix)'
-                })
-
-        # Wallet validation
-        if payment_method == 'wallet':
-            if not payment_method_id:
-                raise serializers.ValidationError({
-                    'payment_method_id': 'Payment method ID is required for wallet payments'
-                })
+            order = OfflineOrder.objects.get(
+                id=attrs['order_id'],
+                restaurant_id=attrs['restaurant_id']
+            )
+            attrs['order'] = order
+        except OfflineOrder.DoesNotExist:
+            raise serializers.ValidationError(
+                {'order_id': 'Order not found for the given restaurant.'}
+            )
+            
+        # Validate Invoice Subtotal matches Order Total
+        invoice_subtotal = attrs['subtotal_amount']
+        order_total_amount = order.total_amount 
         
-        # Card validation
-        if payment_method in ['visa', 'mastercard'] and payment_method_id:
-            # Validate that payment method is a card
-            try:
-                payment_method_obj = PaymentMethod.objects.get(
-                    id=payment_method_id,
-                    method_type='CARD',
-                    is_active=True
-                )
-                attrs['payment_method_obj'] = payment_method_obj
-            except PaymentMethod.DoesNotExist:
-                raise serializers.ValidationError({
-                    'payment_method_id': 'Valid card payment method not found'
-                })
-
-        # Validate payment method exists and is active (for any stored method)
-        if payment_method_id and payment_method != 'wallet':
-            try:
-                payment_method_obj = PaymentMethod.objects.get(
-                    id=payment_method_id,
-                    is_active=True
-                )
-                # Validate method type matches payment method
-                method_type_map = {
-                    'visa': 'CARD',
-                    'mastercard': 'CARD',
-                    'momo': 'MOBILE_MONEY',
-                    'wallet': 'WALLET',
-                    'crypto': 'CRYPTO',
-                    'x_swift_stable_coin': 'CRYPTO'
-                }
-                
-                expected_type = method_type_map.get(payment_method)
-                if expected_type and payment_method_obj.method_type != expected_type:
-                    raise serializers.ValidationError({
-                        'payment_method_id': f'Payment method type mismatch. Expected {expected_type}'
-                    })
-                
-                attrs['payment_method_obj'] = payment_method_obj
-                
-            except PaymentMethod.DoesNotExist:
-                raise serializers.ValidationError({
-                    'payment_method_id': 'Payment method not found or inactive'
-                })
-
+        # We must account for tax and fees being added after the order's base total
+        if invoice_subtotal != order_total_amount:
+            raise serializers.ValidationError(
+                {'subtotal_amount': f"Invoice subtotal ({invoice_subtotal}) does not match the order's item total ({order_total_amount})."}
+            )
+        
+        # Calculate total amount
+        total = (
+            attrs['subtotal_amount'] + 
+            attrs['tax_amount'] + 
+            attrs['service_fee'] - 
+            attrs['discount_amount']
+        )
+        
+        if total <= 0:
+            raise serializers.ValidationError(
+                {'total_amount': 'Total amount must be greater than zero.'}
+            )
+        
+        attrs['total_amount'] = total
+        attrs['restaurant_id'] = attrs['restaurant_id']
+        
         return attrs
+    
+    def create(self, validated_data):
+        # Extract order from validated data
+        order = validated_data.pop('order')
+        
+        # Create invoice
+        invoice = Invoice.objects.create(
+            order=order,
+            restaurant_id=validated_data['restaurant_id'],
+            subtotal_amount=validated_data['subtotal_amount'],
+            tax_amount=validated_data['tax_amount'],
+            service_fee=validated_data['service_fee'],
+            discount_amount=validated_data['discount_amount'],
+            total_amount=validated_data['total_amount'],
+            due_date=timezone.now() + timezone.timedelta(hours=24),
+            status='ISSUED'
+        )
+        
+        return invoice
 
 
-class PaymentAllocationSerializer(serializers.Serializer):
-    """Serializer for payment allocation details"""
-    allocation_id = serializers.UUIDField()
-    invoice_id = serializers.UUIDField()
-    order_id = serializers.UUIDField()
-    allocated_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
-    allocation_date = serializers.DateTimeField()
-    payment_status = serializers.CharField()
-    payment_gateway = serializers.CharField()
-
-
-class InvoiceStatusSerializer(serializers.Serializer):
-    """Serializer for invoice status response"""
-    invoice_id = serializers.UUIDField()
-    order_id = serializers.UUIDField()
-    status = serializers.CharField()
+class InvoiceReadSerializer(UUIDSerializerMixin, TimestampSerializerMixin):
+    """Serializer for reading invoice details"""
+    order_id = serializers.UUIDField(source='order.id', read_only=True)
+    restaurant_id = serializers.UUIDField(read_only=True)
+    restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
+    
+    # Amount fields
+    subtotal_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    tax_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    service_fee = serializers.DecimalField(max_digits=12, decimal_places=2)
+    discount_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
     total_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
     amount_paid = serializers.DecimalField(max_digits=12, decimal_places=2)
-    amount_due = serializers.DecimalField(max_digits=12, decimal_places=2)
-    is_fully_paid = serializers.BooleanField()
-    is_overdue = serializers.BooleanField()
-    due_date = serializers.DateTimeField()
-    paid_at = serializers.DateTimeField(allow_null=True)
-    allocations = PaymentAllocationSerializer(many=True, required=False)
-    created_at = serializers.DateTimeField()
-    updated_at = serializers.DateTimeField()
+    
+    # Computed fields
+    amount_due = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    is_fully_paid = serializers.BooleanField(read_only=True)
+    is_overdue = serializers.BooleanField(read_only=True)
+    
+    # Status and dates
+    status = serializers.CharField(read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    issue_date = serializers.DateTimeField(read_only=True)
+    due_date = serializers.DateTimeField(read_only=True)
+    paid_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    
+    class Meta:
+        model = Invoice
+        fields = [
+            'id', 'order_id', 'restaurant_id', 'restaurant_name',
+            'subtotal_amount', 'tax_amount', 'service_fee', 'discount_amount',
+            'total_amount', 'amount_paid', 'amount_due', 'is_fully_paid',
+            'is_overdue', 'status', 'status_display', 'issue_date', 'due_date',
+            'paid_at', 'created_at', 'updated_at'
+        ]
 
 
-class PaymentStatusSerializer(serializers.Serializer):
-    """Serializer for payment status response"""
-    payment_id = serializers.UUIDField()
-    status = serializers.CharField()
-    amount = serializers.DecimalField(max_digits=12, decimal_places=2)
-    currency = serializers.CharField()
-    gateway = serializers.CharField()
-    gateway_reference = serializers.CharField(
-        required=False, 
-        allow_null=True,
-        allow_blank=True
-    )
-    error_message = serializers.CharField(
-        required=False, 
-        allow_null=True,
-        allow_blank=True
-    )
-    allocated_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
-    unallocated_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
-    allocations = PaymentAllocationSerializer(many=True)
-    customer_phone = serializers.CharField(required=False, allow_null=True)
-    customer_email = serializers.EmailField(required=False, allow_null=True)
-    created_at = serializers.DateTimeField()
-    updated_at = serializers.DateTimeField()
-    completed_at = serializers.DateTimeField(required=False, allow_null=True)
+class InvoiceStatusSerializer(serializers.ModelSerializer):
+    """Serializer for invoice status and allocations"""
+    allocations = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Invoice
+        fields = [
+            'id', 'status', 'total_amount', 'amount_paid', 'amount_due',
+            'is_fully_paid', 'is_overdue', 'due_date', 'paid_at',
+            'allocations', 'created_at', 'updated_at'
+        ]
+    
+    def get_allocations(self, obj):
+        from .serializers import PaymentAllocationReadSerializer
+        allocations = obj.allocations.select_related('payment').all()
+        return PaymentAllocationReadSerializer(allocations, many=True).data
 
 
-class PaymentWebhookSerializer(serializers.Serializer):
-    """Serializer for payment webhook data"""
-    transaction_id = serializers.CharField(
-        max_length=255,
-        help_text="Gateway transaction reference"
-    )
-    status = serializers.ChoiceField(
-        choices=['SUCCESSFUL', 'FAILED', 'PENDING'],
-        help_text="Payment status from gateway"
-    )
+# ====================== PAYMENT SERIALIZERS ======================
+
+class PaymentInitiateSerializer(UUIDSerializerMixin, TimestampSerializerMixin):
+    """Serializer for initiating payments"""
+    invoice_id = serializers.UUIDField(required=True)
     amount = serializers.DecimalField(
         max_digits=12, 
         decimal_places=2,
-        help_text="Amount that was processed"
+        required=False
     )
-    currency = serializers.CharField(
-        max_length=3,
-        default='UGX',
-        help_text="Currency code"
+    payment_method = serializers.ChoiceField(
+        choices=[choice[0] for choice in Payment.GATEWAY_CHOICES],
+        required=True
     )
-    payer_message = serializers.CharField(
+    customer_phone = serializers.CharField(
+        max_length=20, 
         required=False, 
-        allow_blank=True,
-        max_length=500,
-        help_text="Message from payer or gateway"
+        allow_null=True
     )
-    external_id = serializers.UUIDField(
-        help_text="Our payment ID to update"
+    customer_email = serializers.EmailField(
+        required=False, 
+        allow_null=True
     )
-    gateway_timestamp = serializers.DateTimeField(
-        required=False,
-        help_text="When the transaction occurred at the gateway"
-    )
-    metadata = serializers.JSONField(
-        required=False,
-        help_text="Additional gateway-specific data"
+    metadata = serializers.JSONField(required=False, default=dict)
+    
+    class Meta:
+        model = Payment
+        fields = [
+            'id', 'invoice_id', 'amount', 'payment_method',
+            'customer_phone', 'customer_email', 'metadata',
+            'created_at', 'updated_at'
+        ]
+    
+    def validate(self, attrs):
+        # Validate invoice exists and is payable
+        try:
+            invoice = Invoice.objects.get(
+                id=attrs['invoice_id'],
+                status__in=['DRAFT', 'ISSUED', 'PARTIALLY_PAID']
+            )
+            attrs['invoice'] = invoice
+            
+            # If amount not provided, use invoice total
+            if 'amount' not in attrs:
+                attrs['amount'] = invoice.total_amount
+            
+            # Validate amount doesn't exceed invoice amount due
+            if attrs['amount'] > invoice.amount_due:
+                raise serializers.ValidationError(
+                    {'amount': f'Payment amount cannot exceed invoice amount due: {invoice.amount_due}'}
+                )
+            
+        except Invoice.DoesNotExist:
+            raise serializers.ValidationError(
+                {'invoice_id': 'Invoice not found or not payable'}
+            )
+        
+        return attrs
+
+
+class PaymentReadSerializer(UUIDSerializerMixin, TimestampSerializerMixin):
+    """Serializer for reading payment details"""
+    invoice_id = serializers.SerializerMethodField()
+    restaurant_id = serializers.UUIDField(read_only=True)
+    restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
+    
+    # Payment details
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    currency = serializers.CharField(read_only=True)
+    gateway = serializers.CharField(read_only=True)
+    gateway_display = serializers.CharField(source='get_gateway_display', read_only=True)
+    status = serializers.CharField(read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    
+    # Gateway references
+    gateway_reference = serializers.CharField(read_only=True, allow_null=True)
+    gateway_response = serializers.JSONField(read_only=True)
+    
+    # Customer information
+    customer_phone = serializers.CharField(read_only=True, allow_null=True)
+    customer_email = serializers.EmailField(read_only=True, allow_null=True)
+    customer_user_id = serializers.UUIDField(source='customer_user.id', read_only=True, allow_null=True)
+    
+    # Timestamps
+    processed_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    completed_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    
+    # Allocation info
+    allocated_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    unallocated_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    
+    class Meta:
+        model = Payment
+        fields = [
+            'id', 'invoice_id', 'restaurant_id', 'restaurant_name',
+            'amount', 'currency', 'gateway', 'gateway_display',
+            'status', 'status_display', 'gateway_reference', 'gateway_response',
+            'customer_phone', 'customer_email', 'customer_user_id',
+            'processed_at', 'completed_at', 'allocated_amount', 'unallocated_amount',
+            'created_at', 'updated_at'
+        ]
+    
+    def get_invoice_id(self, obj):
+        # Get the first invoice from allocations
+        allocation = obj.allocations.select_related('invoice').first()
+        if allocation:
+            return allocation.invoice.id
+        return None
+
+
+class PaymentAllocationSerializer(UUIDSerializerMixin, TimestampSerializerMixin):
+    """Serializer for payment allocations"""
+    invoice_id = serializers.UUIDField(required=True)
+    payment_id = serializers.UUIDField(required=True)
+    allocated_amount = serializers.DecimalField(
+        max_digits=12, 
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))]
     )
     
-    def validate_external_id(self, value):
-        """Validate that payment exists and can be updated"""
-        from .models import Payment
+    class Meta:
+        model = PaymentAllocation
+        fields = [
+            'id', 'invoice_id', 'payment_id', 'allocated_amount',
+            'allocation_date', 'allocated_by', 'created_at', 'updated_at'
+        ]
+        validators = [
+            UniqueTogetherValidator(
+                queryset=PaymentAllocation.objects.all(),
+                fields=['invoice_id', 'payment_id']
+            )
+        ]
+    
+    def validate(self, attrs):
+        # Validate invoice exists
+        try:
+            invoice = Invoice.objects.get(id=attrs['invoice_id'])
+            attrs['invoice'] = invoice
+        except Invoice.DoesNotExist:
+            raise serializers.ValidationError(
+                {'invoice_id': 'Invoice not found'}
+            )
         
+        # Validate payment exists
+        try:
+            payment = Payment.objects.get(id=attrs['payment_id'])
+            attrs['payment'] = payment
+        except Payment.DoesNotExist:
+            raise serializers.ValidationError(
+                {'payment_id': 'Payment not found'}
+            )
+        
+        # Validate allocation constraints
+        if attrs['allocated_amount'] > payment.unallocated_amount:
+            raise serializers.ValidationError(
+                {'allocated_amount': f'Amount exceeds unallocated payment amount: {payment.unallocated_amount}'}
+            )
+        
+        if attrs['allocated_amount'] > invoice.amount_due:
+            raise serializers.ValidationError(
+                {'allocated_amount': f'Amount exceeds invoice amount due: {invoice.amount_due}'}
+            )
+        
+        return attrs
+    
+    def create(self, validated_data):
+        return PaymentAllocation.objects.create(**validated_data)
+
+
+class PaymentAllocationReadSerializer(UUIDSerializerMixin):
+    """Serializer for reading payment allocations"""
+    invoice_id = serializers.UUIDField(source='invoice.id', read_only=True)
+    payment_id = serializers.UUIDField(source='payment.id', read_only=True)
+    allocated_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    allocation_date = serializers.DateTimeField(read_only=True)
+    allocated_by_id = serializers.UUIDField(source='allocated_by.id', read_only=True, allow_null=True)
+    
+    # Payment details
+    payment_status = serializers.CharField(source='payment.status', read_only=True)
+    payment_gateway = serializers.CharField(source='payment.gateway', read_only=True)
+    payment_amount = serializers.DecimalField(source='payment.amount', max_digits=12, decimal_places=2, read_only=True)
+    
+    class Meta:
+        model = PaymentAllocation
+        fields = [
+            'id', 'invoice_id', 'payment_id', 'allocated_amount',
+            'allocation_date', 'allocated_by_id',
+            'payment_status', 'payment_gateway', 'payment_amount'
+        ]
+
+
+class CashPaymentCompletionSerializer(serializers.Serializer):
+    """Serializer for completing cash payments"""
+    payment_id = serializers.UUIDField(required=True)
+    staff_user_id = serializers.UUIDField(required=True)
+    
+    def validate_payment_id(self, value):
+        try:
+            payment = Payment.objects.get(
+                id=value,
+                gateway='CASH',
+                status='AWAITING_COLLECTION'
+            )
+            return payment
+        except Payment.DoesNotExist:
+            raise serializers.ValidationError(
+                'Payment not found, not cash payment, or not awaiting collection'
+            )
+    
+    def validate(self, attrs):
+        payment = attrs['payment_id']  # This is now the Payment instance
+        
+        # Check if payment has allocations
+        if not payment.allocations.exists():
+            raise serializers.ValidationError(
+                {'payment_id': 'Payment has no invoice allocations'}
+            )
+        
+        attrs['payment'] = payment
+        return attrs
+
+
+# ====================== ACCOUNTING SERIALIZERS ======================
+
+class AccountingEntrySerializer(UUIDSerializerMixin, TimestampSerializerMixin):
+    """Serializer for accounting entries"""
+    restaurant_id = serializers.UUIDField(required=True)
+    payment_id = serializers.UUIDField(required=False, allow_null=True)
+    invoice_id = serializers.UUIDField(required=False, allow_null=True)
+    
+    # Double-entry accounting
+    debit_account = serializers.CharField(max_length=50, required=True)
+    credit_account = serializers.CharField(max_length=50, required=True)
+    amount = serializers.DecimalField(
+        max_digits=12, 
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))]
+    )
+    currency = serializers.CharField(max_length=3, default='UGX')
+    
+    # Reference tracking
+    reference_type = serializers.ChoiceField(
+        choices=[choice[0] for choice in AccountingEntry.REFERENCE_TYPE_CHOICES],
+        required=True
+    )
+    reference_id = serializers.UUIDField(required=True)
+    
+    # Description
+    description = serializers.CharField(required=True)
+    internal_note = serializers.CharField(required=False, allow_blank=True)
+    
+    class Meta:
+        model = AccountingEntry
+        fields = [
+            'id', 'restaurant_id', 'payment_id', 'invoice_id',
+            'debit_account', 'credit_account', 'amount', 'currency',
+            'reference_type', 'reference_id', 'description', 'internal_note',
+            'entry_date', 'value_date', 'entry_status', 'created_by',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['entry_status', 'posted_at', 'created_at', 'updated_at']
+    
+    def validate(self, attrs):
+        # Validate restaurant exists
+        try:
+            Restaurant.objects.get(id=attrs['restaurant_id'])
+        except Restaurant.DoesNotExist:
+            raise serializers.ValidationError(
+                {'restaurant_id': 'Restaurant not found'}
+            )
+        
+        # Validate payment if provided
+        if attrs.get('payment_id'):
+            try:
+                Payment.objects.get(id=attrs['payment_id'])
+            except Payment.DoesNotExist:
+                raise serializers.ValidationError(
+                    {'payment_id': 'Payment not found'}
+                )
+        
+        # Validate invoice if provided
+        if attrs.get('invoice_id'):
+            try:
+                Invoice.objects.get(id=attrs['invoice_id'])
+            except Invoice.DoesNotExist:
+                raise serializers.ValidationError(
+                    {'invoice_id': 'Invoice not found'}
+                )
+        
+        return attrs
+
+
+class AccountingEntryReadSerializer(UUIDSerializerMixin, TimestampSerializerMixin):
+    """Serializer for reading accounting entries"""
+    restaurant_id = serializers.UUIDField(read_only=True)
+    payment_id = serializers.UUIDField(source='payment.id', read_only=True, allow_null=True)
+    invoice_id = serializers.UUIDField(source='invoice.id', read_only=True, allow_null=True)
+    
+    # Double-entry accounting
+    debit_account = serializers.CharField(read_only=True)
+    credit_account = serializers.CharField(read_only=True)
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    currency = serializers.CharField(read_only=True)
+    
+    # Reference tracking
+    reference_type = serializers.CharField(read_only=True)
+    reference_type_display = serializers.CharField(source='get_reference_type_display', read_only=True)
+    reference_id = serializers.UUIDField(read_only=True)
+    
+    # Status and dates
+    entry_status = serializers.CharField(read_only=True)
+    entry_status_display = serializers.CharField(source='get_entry_status_display', read_only=True)
+    entry_date = serializers.DateField(read_only=True)
+    value_date = serializers.DateField(read_only=True)
+    posted_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    
+    # Description
+    description = serializers.CharField(read_only=True)
+    internal_note = serializers.CharField(read_only=True)
+    
+    # Created by
+    created_by_id = serializers.UUIDField(read_only=True, allow_null=True)
+    
+    class Meta:
+        model = AccountingEntry
+        fields = [
+            'id', 'restaurant_id', 'payment_id', 'invoice_id',
+            'debit_account', 'credit_account', 'amount', 'currency',
+            'reference_type', 'reference_type_display', 'reference_id',
+            'entry_status', 'entry_status_display', 'entry_date', 'value_date',
+            'posted_at', 'description', 'internal_note', 'created_by_id',
+            'created_at', 'updated_at'
+        ]
+
+
+# ====================== WALLET SERIALIZERS ======================
+
+class CustomerWalletCreateSerializer(UUIDSerializerMixin, TimestampSerializerMixin):
+    """Serializer for creating customer wallets"""
+    user_id = serializers.UUIDField(required=True)
+    restaurant_id = serializers.UUIDField(required=True)
+    wallet_type = serializers.ChoiceField(
+        choices=[choice[0] for choice in CustomerWallet.WALLET_TYPE_CHOICES],
+        default='PREPAID'
+    )
+    currency = serializers.CharField(max_length=8, default='X-SWIFT')
+    is_refundable = serializers.BooleanField(default=True)
+    max_balance = serializers.DecimalField(
+        max_digits=12, 
+        decimal_places=2,
+        required=False,
+        allow_null=True
+    )
+    
+    class Meta:
+        model = CustomerWallet
+        fields = [
+            'id', 'user_id', 'restaurant_id', 'wallet_type', 'currency',
+            'is_refundable', 'max_balance', 'created_at', 'updated_at'
+        ]
+        validators = [
+            UniqueTogetherValidator(
+                queryset=CustomerWallet.objects.all(),
+                fields=['user_id', 'restaurant_id', 'wallet_type']
+            )
+        ]
+    
+    def validate(self, attrs):
+        # Validate restaurant exists
+        try:
+            Restaurant.objects.get(id=attrs['restaurant_id'])
+        except Restaurant.DoesNotExist:
+            raise serializers.ValidationError(
+                {'restaurant_id': 'Restaurant not found'}
+            )
+        
+        # Validate max_balance if provided
+        if attrs.get('max_balance') is not None and attrs['max_balance'] <= 0:
+            raise serializers.ValidationError(
+                {'max_balance': 'Maximum balance must be greater than zero'}
+            )
+        
+        return attrs
+    
+    def create(self, validated_data):
+        return CustomerWallet.objects.create(**validated_data)
+
+
+class CustomerWalletReadSerializer(UUIDSerializerMixin, TimestampSerializerMixin):
+    """Serializer for reading customer wallet details"""
+    user_id = serializers.UUIDField(read_only=True)
+    restaurant_id = serializers.UUIDField(read_only=True)
+    restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
+    
+    # Balance tracking
+    available_balance = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    pending_balance = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    total_balance = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    
+    # Wallet properties
+    wallet_type = serializers.CharField(read_only=True)
+    wallet_type_display = serializers.CharField(source='get_wallet_type_display', read_only=True)
+    currency = serializers.CharField(read_only=True)
+    is_refundable = serializers.BooleanField(read_only=True)
+    
+    # Limits
+    max_balance = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, allow_null=True)
+    
+    # Status
+    status = serializers.CharField(read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    closed_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    
+    # Computed fields
+    can_afford = serializers.SerializerMethodField()
+    is_active = serializers.BooleanField(read_only=True)
+    is_suspended = serializers.BooleanField(read_only=True)
+    is_closed = serializers.BooleanField(read_only=True)
+    
+    class Meta:
+        model = CustomerWallet
+        fields = [
+            'id', 'user_id', 'restaurant_id', 'restaurant_name',
+            'available_balance', 'pending_balance', 'total_balance',
+            'wallet_type', 'wallet_type_display', 'currency', 'is_refundable',
+            'max_balance', 'status', 'status_display', 'closed_at',
+            'can_afford', 'is_active', 'is_suspended', 'is_closed',
+            'created_at', 'updated_at'
+        ]
+    
+    def get_can_afford(self, obj):
+        # This is a computed field that checks if wallet can afford a certain amount
+        # In practice, you'd pass the amount through context
+        amount = self.context.get('check_amount', Decimal('0'))
+        return obj.can_afford(amount)
+
+
+class WalletFundsOperationSerializer(serializers.Serializer):
+    """Base serializer for wallet operations"""
+    user_id = serializers.UUIDField(required=True)
+    restaurant_id = serializers.UUIDField(required=True)
+    amount = serializers.DecimalField(
+        max_digits=12, 
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))]
+    )
+    reference_type = serializers.CharField(max_length=30, required=True)
+    reference_id = serializers.UUIDField(required=True)
+    description = serializers.CharField(required=True)
+    correlation_id = serializers.UUIDField(required=False, allow_null=True)
+    wallet_type = serializers.ChoiceField(
+        choices=[choice[0] for choice in CustomerWallet.WALLET_TYPE_CHOICES],
+        default='PREPAID'
+    )
+    
+    def validate(self, attrs):
+        # Validate wallet exists
+        try:
+            wallet = CustomerWallet.objects.get(
+                user_id=attrs['user_id'],
+                restaurant_id=attrs['restaurant_id'],
+                wallet_type=attrs['wallet_type']
+            )
+            attrs['wallet'] = wallet
+        except CustomerWallet.DoesNotExist:
+            raise serializers.ValidationError(
+                {'wallet': 'Wallet not found for the given user, restaurant, and type'}
+            )
+        
+        return attrs
+
+
+class WalletAddFundsSerializer(WalletFundsOperationSerializer):
+    """Serializer for adding funds to wallet"""
+    pass
+
+
+class WalletAuthorizeFundsSerializer(WalletFundsOperationSerializer):
+    """Serializer for authorizing funds in wallet"""
+    pass
+
+
+class WalletCaptureFundsSerializer(WalletFundsOperationSerializer):
+    """Serializer for capturing authorized funds"""
+    pass
+
+
+class WalletReleaseFundsSerializer(WalletFundsOperationSerializer):
+    """Serializer for releasing authorized funds"""
+    pass
+
+
+class WalletRefundSerializer(serializers.Serializer):
+    """Serializer for processing refunds to wallet"""
+    user_id = serializers.UUIDField(required=True)
+    restaurant_id = serializers.UUIDField(required=True)
+    refund_id = serializers.UUIDField(required=True)
+    amount = serializers.DecimalField(
+        max_digits=12, 
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))]
+    )
+    original_payment_ref = serializers.CharField(required=True)
+    wallet_type = serializers.ChoiceField(
+        choices=[choice[0] for choice in CustomerWallet.WALLET_TYPE_CHOICES],
+        default='PREPAID'
+    )
+    correlation_id = serializers.UUIDField(required=False, allow_null=True)
+    
+    def validate(self, attrs):
+        # Validate wallet exists
+        try:
+            wallet = CustomerWallet.objects.get(
+                user_id=attrs['user_id'],
+                restaurant_id=attrs['restaurant_id'],
+                wallet_type=attrs['wallet_type']
+            )
+            attrs['wallet'] = wallet
+        except CustomerWallet.DoesNotExist:
+            raise serializers.ValidationError(
+                {'wallet': 'Wallet not found for the given user, restaurant, and type'}
+            )
+        
+        return attrs
+
+
+# ====================== WALLET TRANSACTION SERIALIZERS ======================
+
+class WalletTransactionReadSerializer(UUIDSerializerMixin, TimestampSerializerMixin):
+    """Serializer for reading wallet transactions"""
+    wallet_id = serializers.UUIDField(source='wallet.id', read_only=True)
+    
+    # Transaction details
+    transaction_type = serializers.CharField(read_only=True)
+    transaction_type_display = serializers.CharField(source='get_transaction_type_display', read_only=True)
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    running_balance = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    
+    # Reference
+    reference_type = serializers.CharField(read_only=True, allow_null=True)
+    reference_id = serializers.UUIDField(read_only=True, allow_null=True)
+    
+    # Status
+    status = serializers.CharField(read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    
+    # Metadata
+    description = serializers.CharField(read_only=True)
+    metadata = serializers.JSONField(read_only=True)
+    
+    # Processing timestamp
+    processed_at = serializers.DateTimeField(read_only=True)
+    
+    class Meta:
+        model = WalletTransaction
+        fields = [
+            'id', 'wallet_id', 'transaction_type', 'transaction_type_display',
+            'amount', 'running_balance', 'reference_type', 'reference_id',
+            'status', 'status_display', 'description', 'metadata',
+            'processed_at', 'created_at', 'updated_at'
+        ]
+
+
+# ====================== WEBHOOK SERIALIZERS ======================
+
+class PaymentWebhookSerializer(serializers.Serializer):
+    """Serializer for payment webhook data"""
+    external_id = serializers.UUIDField(required=True)
+    status = serializers.ChoiceField(
+        choices=['SUCCESSFUL', 'FAILED', 'PENDING'],
+        required=True
+    )
+    transaction_id = serializers.CharField(required=False, allow_null=True)
+    payer_message = serializers.CharField(required=False, allow_null=True)
+    gateway = serializers.CharField(required=False, default='MOMO')
+    metadata = serializers.JSONField(required=False, default=dict)
+    
+    def validate_external_id(self, value):
+        # Validate payment exists
         try:
             payment = Payment.objects.get(id=value)
-            
-            # Check if payment can be updated (not already completed/refunded)
-            if payment.status in ['COMPLETED', 'REFUNDED']:
-                raise serializers.ValidationError(
-                    f"Cannot update payment with status: {payment.status}"
-                )
-                
-            return value
-            
+            return payment
         except Payment.DoesNotExist:
-            raise serializers.ValidationError("Payment not found")
+            raise serializers.ValidationError('Payment not found')
+
+
+# ====================== UTILITY SERIALIZERS ======================
+
+class PaymentGatewaySerializer(serializers.Serializer):
+    """Serializer for available payment gateways"""
+    code = serializers.CharField(source='0')
+    name = serializers.CharField(source='1')
+
+
+class InvoiceStatusSerializer(serializers.Serializer):
+    """Serializer for invoice status options"""
+    code = serializers.CharField(source='0')
+    name = serializers.CharField(source='1')
 
 
 class WalletBalanceSerializer(serializers.Serializer):
-    """Serializer for wallet balance"""
-    wallet_id = serializers.UUIDField()
+    """Serializer for wallet balance response"""
+    wallet_type = serializers.CharField()
     available_balance = serializers.DecimalField(max_digits=12, decimal_places=2)
     pending_balance = serializers.DecimalField(max_digits=12, decimal_places=2)
     total_balance = serializers.DecimalField(max_digits=12, decimal_places=2)
     currency = serializers.CharField()
-    wallet_type = serializers.CharField()
     status = serializers.CharField()
-    is_refundable = serializers.BooleanField()
-    last_transaction_at = serializers.DateTimeField(required=False, allow_null=True)
 
 
-class AddFundsSerializer(serializers.Serializer):
-    """Serializer for adding funds to wallet"""
-    amount = serializers.DecimalField(
-        max_digits=12, 
-        decimal_places=2, 
-        min_value=Decimal('0.01'),
-        error_messages={
-            'min_value': 'Amount must be greater than 0.00'
-        }
-    )
-    currency = serializers.CharField(default='UGX', max_length=3)
-    reference_type = serializers.ChoiceField(
-        choices=[
-            ('payment', 'Payment'),
-            ('manual_adjustment', 'Manual Adjustment'),
-            ('promotion', 'Promotion'),
-            ('refund', 'Refund'),
-            ('transfer', 'Transfer')
-        ]
-    )
-    reference_id = serializers.UUIDField(required=False)
-    description = serializers.CharField(
-        max_length=500,
-        help_text="Description of the funds addition"
-    )
-    
-    def validate(self, attrs):
-        amount = attrs['amount']
-        reference_type = attrs['reference_type']
-        reference_id = attrs.get('reference_id')
-        
-        # For certain reference types, reference_id might be required
-        if reference_type in ['payment', 'refund'] and not reference_id:
-            raise serializers.ValidationError({
-                'reference_id': f'Reference ID is required for {reference_type} type'
-            })
-        
-        # Validate maximum deposit amount (optional business rule)
-        max_deposit = Decimal('1000000.00')  # 1 million UGX
-        if amount > max_deposit:
-            raise serializers.ValidationError({
-                'amount': f'Deposit amount cannot exceed {max_deposit}'
-            })
-        
-        return attrs
+# ====================== RESPONSE SERIALIZERS ======================
+
+class InvoiceCreateResponseSerializer(serializers.Serializer):
+    """Response serializer for invoice creation"""
+    success = serializers.BooleanField()
+    invoice_id = serializers.UUIDField(required=False)
+    order_id = serializers.UUIDField(required=False)
+    total_amount = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    amount_due = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    error = serializers.CharField(required=False, allow_null=True)
 
 
-class WalletTransactionSerializer(serializers.Serializer):
-    """Serializer for wallet transaction history"""
-    transaction_id = serializers.UUIDField()
-    transaction_type = serializers.CharField()
-    amount = serializers.DecimalField(max_digits=12, decimal_places=2)
-    running_balance = serializers.DecimalField(max_digits=12, decimal_places=2)
-    reference_type = serializers.CharField(allow_null=True)
-    reference_id = serializers.UUIDField(allow_null=True)
-    status = serializers.CharField()
-    description = serializers.CharField()
-    created_at = serializers.DateTimeField()
-    processed_at = serializers.DateTimeField()
+class PaymentInitiationResponseSerializer(serializers.Serializer):
+    """Response serializer for payment initiation"""
+    success = serializers.BooleanField()
+    payment_id = serializers.UUIDField(required=False)
+    invoice_id = serializers.UUIDField(required=False)
+    status = serializers.CharField(required=False)
+    gateway = serializers.CharField(required=False)
+    message = serializers.CharField(required=False, allow_null=True)
+    requires_staff_action = serializers.BooleanField(required=False)
+    error = serializers.CharField(required=False, allow_null=True)
 
 
-class OrderPaymentsSerializer(serializers.Serializer):
-    """Serializer for order payments summary"""
-    order_id = serializers.UUIDField()
-    invoice_id = serializers.UUIDField()
-    invoice_status = serializers.CharField()
-    total_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
-    amount_paid = serializers.DecimalField(max_digits=12, decimal_places=2)
-    amount_due = serializers.DecimalField(max_digits=12, decimal_places=2)
-    is_fully_paid = serializers.BooleanField()
-    is_overdue = serializers.BooleanField()
-    due_date = serializers.DateTimeField()
-    paid_at = serializers.DateTimeField(allow_null=True)
-    payments = serializers.ListField(
-        child=serializers.DictField(),
-        help_text="List of payment allocations with details"
-    )
+class CashPaymentCompletionResponseSerializer(serializers.Serializer):
+    """Response serializer for cash payment completion"""
+    success = serializers.BooleanField()
+    payment_id = serializers.UUIDField(required=False)
+    status = serializers.CharField(required=False)
+    completed_at = serializers.DateTimeField(required=False, allow_null=True)
+    error = serializers.CharField(required=False, allow_null=True)
 
-class PaymentAllocationCreateSerializer(serializers.Serializer):
-    """Serializer for manual payment allocation"""
-    payment_id = serializers.UUIDField()
-    invoice_id = serializers.UUIDField()
-    amount = serializers.DecimalField(
-        max_digits=12, 
-        decimal_places=2, 
-        min_value=Decimal('0.01')
-    )
-    
-    def validate(self, attrs):
-        payment_id = attrs['payment_id']
-        invoice_id = attrs['invoice_id']
-        amount = attrs['amount']
-        
-        # Validate payment exists and has sufficient unallocated amount
-        try:
-            payment = Payment.objects.get(id=payment_id)
-            if payment.unallocated_amount < amount:
-                raise serializers.ValidationError({
-                    'amount': f'Payment only has {payment.unallocated_amount} unallocated, requested {amount}'
-                })
-        except Payment.DoesNotExist:
-            raise serializers.ValidationError({
-                'payment_id': 'Payment not found'
-            })
-        
-        # Validate invoice exists and has sufficient amount due
-        try:
-            invoice = Invoice.objects.get(id=invoice_id)
-            if invoice.amount_due < amount:
-                raise serializers.ValidationError({
-                    'amount': f'Invoice only has {invoice.amount_due} due, requested {amount}'
-                })
-        except Invoice.DoesNotExist:
-            raise serializers.ValidationError({
-                'invoice_id': 'Invoice not found'
-            })
-        
-        # Check if allocation already exists
-        if PaymentAllocation.objects.filter(payment_id=payment_id, invoice_id=invoice_id).exists():
-            raise serializers.ValidationError({
-                'payment_id': 'Payment already allocated to this invoice'
-            })
-        
-        attrs['payment'] = payment
-        attrs['invoice'] = invoice
-        return attrs
 
-#serializer for cash completion
-class CashPaymentCompleteSerializer(serializers.Serializer):
-    """Serializer for staff to confirm cash collection"""
-    payment_id = serializers.UUIDField()
-    staff_user_id = serializers.UUIDField()
-    collected_amount = serializers.DecimalField(
-        max_digits=12, 
-        decimal_places=2,
-        min_value=Decimal('0.01')
-    )
-    
-    def validate(self, attrs):
-        payment_id = attrs['payment_id']
-        collected_amount = attrs['collected_amount']
-        
-        try:
-            payment = Payment.objects.get(
-                id=payment_id, 
-                status='AWAITING_COLLECTION'
-            )
-            
-            if collected_amount != payment.amount:
-                raise serializers.ValidationError({
-                    'collected_amount': f'Collected amount {collected_amount} does not match expected amount {payment.amount}'
-                })
-                
-            attrs['payment'] = payment
-            return attrs
-            
-        except Payment.DoesNotExist:
-            raise serializers.ValidationError({
-                'payment_id': 'Payment not found or not awaiting collection'
-            })
+class WalletOperationResponseSerializer(serializers.Serializer):
+    """Response serializer for wallet operations"""
+    success = serializers.BooleanField()
+    wallet_id = serializers.UUIDField(required=False)
+    new_balance = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    available_balance = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    pending_balance = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    message = serializers.CharField(required=False, allow_null=True)
+    error = serializers.CharField(required=False, allow_null=True)
+    allowed = serializers.BooleanField(required=False)
+    reason = serializers.CharField(required=False, allow_null=True)
 
-class RefundRequestSerializer(serializers.Serializer):
-    """Serializer for refund requests"""
-    payment_id = serializers.UUIDField()
-    amount = serializers.DecimalField(
-        max_digits=12, 
-        decimal_places=2, 
-        min_value=Decimal('0.01')
+
+# ====================== QUERY PARAM SERIALIZERS ======================
+
+class InvoiceQuerySerializer(serializers.Serializer):
+    """Serializer for invoice query parameters"""
+    restaurant_id = serializers.UUIDField(required=False)
+    status = serializers.ChoiceField(
+        choices=[choice[0] for choice in Invoice.STATUS_CHOICES],
+        required=False
     )
-    reason = serializers.CharField(
-        max_length=500,
-        help_text="Reason for the refund"
+    start_date = serializers.DateTimeField(required=False)
+    end_date = serializers.DateTimeField(required=False)
+    is_overdue = serializers.BooleanField(required=False)
+    is_fully_paid = serializers.BooleanField(required=False)
+    page = serializers.IntegerField(min_value=1, default=1)
+    page_size = serializers.IntegerField(min_value=1, max_value=100, default=20)
+
+
+class PaymentQuerySerializer(serializers.Serializer):
+    """Serializer for payment query parameters"""
+    restaurant_id = serializers.UUIDField(required=False)
+    gateway = serializers.ChoiceField(
+        choices=[choice[0] for choice in Payment.GATEWAY_CHOICES],
+        required=False
     )
-    refund_to_original_method = serializers.BooleanField(
-        default=True,
-        help_text="Whether to refund to original payment method"
+    status = serializers.ChoiceField(
+        choices=[choice[0] for choice in Payment.STATUS_CHOICES],
+        required=False
     )
-    alternative_method_id = serializers.UUIDField(
-        required=False,
-        help_text="Alternative payment method for refund (if not original)"
-    )
-    
-    def validate(self, attrs):
-        payment_id = attrs['payment_id']
-        amount = attrs['amount']
-        refund_to_original = attrs.get('refund_to_original_method', True)
-        alternative_method_id = attrs.get('alternative_method_id')
-        
-        # Validate payment exists and is refundable
-        try:
-            payment = Payment.objects.get(id=payment_id)
-            
-            if payment.status != 'COMPLETED':
-                raise serializers.ValidationError({
-                    'payment_id': 'Only completed payments can be refunded'
-                })
-            
-            if payment.allocated_amount < amount:
-                raise serializers.ValidationError({
-                    'amount': f'Refund amount exceeds allocated amount: {payment.allocated_amount}'
-                })
-                
-        except Payment.DoesNotExist:
-            raise serializers.ValidationError({
-                'payment_id': 'Payment not found'
-            })
-        
-        # Validate alternative method if provided
-        if not refund_to_original and not alternative_method_id:
-            raise serializers.ValidationError({
-                'alternative_method_id': 'Alternative payment method required when not refunding to original method'
-            })
-        
-        if alternative_method_id:
-            try:
-                PaymentMethod.objects.get(id=alternative_method_id, is_active=True)
-            except PaymentMethod.DoesNotExist:
-                raise serializers.ValidationError({
-                    'alternative_method_id': 'Alternative payment method not found or inactive'
-                })
-        
-        attrs['payment'] = payment
-        return attrs
+    customer_user_id = serializers.UUIDField(required=False)
+    start_date = serializers.DateTimeField(required=False)
+    end_date = serializers.DateTimeField(required=False)
+    page = serializers.IntegerField(min_value=1, default=1)
+    page_size = serializers.IntegerField(min_value=1, max_value=100, default=20)

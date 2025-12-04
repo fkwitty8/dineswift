@@ -165,13 +165,28 @@ def failed_payment(test_restaurant, test_user):
     )
 
 @pytest.fixture
+def test_user(test_restaurant): # Required for thread-safe concurrent testing
+    """Create a test user instance (used for concurrent testing)"""
+    from django.contrib.auth import get_user_model
+    User = get_user_model() 
+    user = User.objects.create_user(
+        username='testuser_concurrent',
+        password='testpass123',
+        restaurant_id=test_restaurant.id
+    )
+    return user
+
+
+@pytest.fixture
 def customer_wallet(test_user, test_restaurant):
     """Create a customer wallet for testing"""
     return CustomerWallet.objects.create(
-        user=test_user,
-        restaurant=test_restaurant,
-        available_balance=Decimal('150.00'),
+        user_id=test_user.id,
+        restaurant_id=test_restaurant.id,
+        available_balance=Decimal('1000.00'),
+        pending_balance=Decimal('0.00'),
         wallet_type='PREPAID',
+        status='ACTIVE',
         currency='UGX'
     )
 
@@ -201,18 +216,6 @@ def authenticated_client(test_restaurant):
     client = APIClient()
     client.force_authenticate(user=user)
     return client
-
-@pytest.fixture
-def test_user(test_restaurant): # Required for thread-safe concurrent testing
-    """Create a test user instance (used for concurrent testing)"""
-    from django.contrib.auth import get_user_model
-    User = get_user_model() 
-    user = User.objects.create_user(
-        username='testuser_concurrent',
-        password='testpass123',
-        restaurant_id=test_restaurant.id
-    )
-    return user
 
 @pytest.fixture
 def test_user_2(test_restaurant): # Required for thread-safe concurrent testing

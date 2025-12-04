@@ -649,24 +649,31 @@ class TestPaymentServices:
         assert service1 is service2
         assert isinstance(service1, PaymentService)
 
+@pytest.mark.django_db
 class TestRealTimeNotifications:
     """Tests for real-time notification system"""
-    
+
     @patch('apps.payment.services.get_channel_layer')
     @patch('apps.payment.services.async_to_sync')
-    def test_send_real_time_notification_success(self, mock_async_to_sync, mock_channel_layer, test_restaurant):
+    def test_send_real_time_notification_success(self, mock_async_to_sync, mock_get_channel_layer, test_restaurant):
         """Test successful real-time notification sending"""
+        
         service = PaymentService()
         
-        # Mock the channel layer and async_to_sync
-        mock_channel = AsyncMock()
-        mock_channel_layer.return_value = mock_channel
-        mock_async_to_sync.return_value = Mock()
+        # 1. Setup the mock channel layer instance
+        mock_channel = AsyncMock() 
+        mock_get_channel_layer.return_value = mock_channel
+        
+        # 2. Setup the mock that GETS CALLED (the synchronous wrapper)
+        # This is the crucial step. We check calls on this object.
+        wrapper_mock = Mock()
+       
+        mock_async_to_sync.return_value = wrapper_mock
         
         notification_data = {
             'payment_id': str(uuid.uuid4()),
             'amount': 100.00,
-            'order_id': str(uuid.uuid4())
+            'order_id': str(uuid.uuid4()) # Added order_id for consistency
         }
         
         # Call the method
@@ -676,19 +683,68 @@ class TestRealTimeNotifications:
             data=notification_data
         )
         
-        # Verify channel layer was called with correct arguments
-        expected_group_name = f"restaurant_{test_restaurant.id}_staff"
-        mock_async_to_sync.assert_called_once()
+        # 3. Assert the call was made on the wrapper mock
+        wrapper_mock.assert_called_once()
         
-        # Get the actual call to group_send
-        call_args = mock_async_to_sync.call_args[0][0].__self__.group_send.call_args
-        assert call_args[0][0] == expected_group_name
-        assert call_args[0][1]['type'] == 'staff.notification'
-        assert call_args[0][1]['event'] == 'payment_awaiting_collection'
-    
+        # 4. Assert that mock_channel.group_send was PASSED as an argument to async_to_sync
+        mock_async_to_sync.assert_called_once_with(mock_channel.group_send)
+        
+        # 5. Retrieve the arguments from the wrapper mock call
+        # call_args[0] is (group_name, notification_payload)
+        group_name, notification_payload = wrapper_mock.call_args[0]
+        
+        expected_group_name = f"restaurant_{test_restaurant.id}_staff"
+        
+        # 6. Assertions on the arguments
+        assert group_name == expected_group_name
+        assert notification_payload['type'] == 'staff.notification'
+        assert notification_payload['event'] == 'payment_awaiting_collection'
+        assert notification_payload['data'] == notification_data
+        # You can also check for 'timestamp' and 'server_id' if needed
+     
+    @pytest.mark.asyncio # Marks the test as async, making 'await' valid
+    @patch('apps.payment.services.get_channel_layer') 
+    async def test_send_real_time_notification_async_success(self, mock_get_channel_layer, test_restaurant):
+        """Test successful async real-time notification sending."""
+        
+        service = PaymentService()
+        
+        # Setup the mock channel layer instance
+        # We use AsyncMock because it handles awaitable methods like group_send
+        mock_channel = AsyncMock() 
+        mock_get_channel_layer.return_value = mock_channel
+        
+        notification_data = {
+            'payment_id': str(uuid.uuid4()),
+            'amount': 100.00,
+            'order_id': str(uuid.uuid4())
+        }
+        
+        # Call the async method using await
+        await service._send_real_time_notification_async(
+            room=str(test_restaurant.id),
+            event='payment_awaiting_collection',
+            data=notification_data
+        )
+        
+        # Assert directly on the mock channel instance's group_send method
+        mock_channel.group_send.assert_called_once()
+        
+        # Retrieve the call arguments
+        # call_args[0] is the tuple of positional arguments: (group_name, message_data)
+        group_name, message_data = mock_channel.group_send.call_args[0]
+        
+        expected_group_name = f"restaurant_{test_restaurant.id}_staff"
+        
+        # 5. Assertions
+        assert group_name == expected_group_name
+        assert message_data['type'] == 'staff.notification'
+        assert message_data['event'] == 'payment_awaiting_collection'
+        assert message_data['data'] == notification_data
+            
     @patch('apps.payment.services.get_channel_layer')
     @patch('apps.payment.services.async_to_sync')
-    def test_send_real_time_notification_channel_error(self, mock_async_to_sync, mock_channel_layer, test_restaurant):
+    def test_send_real_time_notification_channel_error(self, mock_async_to_sync, test_restaurant):
         """Test notification handling when channel layer fails"""
         service = PaymentService()
         
@@ -710,6 +766,39 @@ class TestRealTimeNotifications:
         # Verify error was logged but no exception raised
         mock_async_to_sync.assert_called_once()
     
+    @pytest.mark.asyncio
+    @patch('apps.payment.services.get_channel_layer')
+    @patch('apps.payment.services.logger')
+    async def test_send_real_time_notification_async_error(self, mock_logger, mock_get_channel_layer, test_restaurant):
+        """Test async notification handling when channel layer fails."""
+        
+        service = PaymentService()
+        
+        # 1. Setup mock channel layer
+        mock_channel = AsyncMock()
+        # Configure the awaitable group_send method to raise an exception
+        mock_channel.group_send.side_effect = Exception("Async channel layer failure")
+        mock_get_channel_layer.return_value = mock_channel
+        
+        notification_data = {'payment_id': str(uuid.uuid4())}
+        
+        # 2. Since your service method ends with `raise` on exception, 
+        # we expect the test to raise an exception.
+        with pytest.raises(Exception) as excinfo:
+            await service._send_real_time_notification_async(
+                room=str(test_restaurant.id),
+                event='test_event',
+                data=notification_data
+            )
+        
+        # 3. Assertions
+        assert "Async channel layer failure" in str(excinfo.value)
+        mock_channel.group_send.assert_called_once()
+        
+        # Verify the error was logged (using the patched logger)
+        mock_logger.error.assert_called_once()
+        assert "Async notification failed" in mock_logger.error.call_args[0][0]
+        
     @patch('apps.payment.services.ActivityLog.objects.create')
     @patch('apps.payment.services.get_channel_layer')
     @patch('apps.payment.services.async_to_sync')
@@ -738,15 +827,16 @@ class TestRealTimeNotifications:
         assert call_args['module'] == 'NOTIFICATION'
         assert call_args['action'] == 'REALTIME_NOTIFICATION_FAILED'
     
-    def test_notification_in_cash_payment_flow(self, test_order, test_restaurant, test_user):
+    def test_notification_in_cash_payment_flow(self, invoice_instance, test_restaurant, test_user):
         """Test that notifications are sent during cash payment initiation"""
         service = PaymentService()
         
         with patch.object(service, '_send_real_time_notification') as mock_notification:
+            
             payment_data = {
-                'invoice_id': str(test_order.invoice.id),
+                'invoice_id': str(invoice_instance.id),
                 'payment_method': 'cash',
-                'amount': '50.00',
+                'amount': '113.00',
                 'customer_phone': '256712345678'
             }
             
@@ -764,27 +854,6 @@ class TestRealTimeNotifications:
             assert call_args[1]['event'] == 'payment_awaiting_collection'
             assert 'payment_id' in call_args[1]['data']
     
-    @pytest.mark.asyncio
-    async def test_async_notification_method(self, test_restaurant):
-        """Test the async version of notification method"""
-        service = PaymentService()
-        
-        with patch('apps.payment.services.get_channel_layer') as mock_channel_layer:
-            mock_channel = AsyncMock()
-            mock_channel_layer.return_value = mock_channel
-            
-            notification_data = {'test': 'data'}
-            
-            # This should work without async_to_sync in async context
-            await service._send_real_time_notification_async(
-                room=str(test_restaurant.id),
-                event='test_event',
-                data=notification_data
-            )
-            
-            # Verify direct async call was made
-            mock_channel.group_send.assert_called_once()
-    
     def test_payment_service_singleton(self):
         """Test that payment_service is a singleton instance"""
         from apps.payment.services import payment_service
@@ -798,6 +867,7 @@ class TestRealTimeNotifications:
         service3 = PaymentService()
         assert service3 is not payment_service
 
+@pytest.mark.django_db
 class TestConcurrentPaymentOperations:
     """Tests for concurrent payment operations"""
     
@@ -837,24 +907,32 @@ class TestConcurrentPaymentOperations:
         assert payment1.restaurant == test_restaurant
         assert payment2.restaurant == test_restaurant
 
-    def test_concurrent_wallet_payments_same_user(self, test_user, test_restaurant, customer_wallet):
+    def test_concurrent_wallet_payments_same_user(self, test_user,test_order,test_second_order, test_restaurant, customer_wallet):
         """Test concurrent wallet payments from the same user"""
         service = PaymentService()
         
         # Create two invoices
         invoice1 = Invoice.objects.create(
-            order=... ,  # You'd need actual orders here
+            order=test_second_order,
             restaurant=test_restaurant,
-            subtotal_amount=Decimal('30.00'),
-            total_amount=Decimal('30.00'),
+            subtotal_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'),
+            service_fee=Decimal('5.00'),
+            discount_amount=Decimal('10.00'),
+            total_amount=Decimal('113.00'),
+            due_date=timezone.now() + timedelta(days=1),
             status='ISSUED'
         )
         
         invoice2 = Invoice.objects.create(
-            order=... ,  # You'd need actual orders here  
+            order=test_order,
             restaurant=test_restaurant,
-            subtotal_amount=Decimal('40.00'),
-            total_amount=Decimal('40.00'),
+            subtotal_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'),
+            service_fee=Decimal('5.00'),
+            discount_amount=Decimal('10.00'),
+            total_amount=Decimal('113.00'),
+            due_date=timezone.now() + timedelta(days=1),
             status='ISSUED'
         )
         
@@ -862,48 +940,65 @@ class TestConcurrentPaymentOperations:
             'invoice_id': str(invoice1.id),
             'payment_method': 'wallet',
             'payment_method_id': str(customer_wallet.id),
-            'amount': '30.00'
+            'amount': '100.00'
         }
         
         payment_data_2 = {
             'invoice_id': str(invoice2.id),
             'payment_method': 'wallet', 
             'payment_method_id': str(customer_wallet.id),
-            'amount': '40.00'
+            'amount': '60.00'
         }
         
         # First payment should succeed
         result1 = service.initiate_payment(payment_data_1, str(test_user.id))
         assert result1['success'] is True
         
+        #testing pertially paid invoice staus 
+        invoice1.refresh_from_db()
+        assert invoice1.status == 'PARTIALLY_PAID'
+        
+        #verify vallet balance after first payment
+        customer_wallet.refresh_from_db()
+        assert customer_wallet.available_balance == Decimal('50.00')  # 150 - 100
+        
+        
         # Second payment should fail due to insufficient funds (70 remaining after first payment)
         result2 = service.initiate_payment(payment_data_2, str(test_user.id))
         assert result2['success'] is False
         assert 'insufficient' in result2['error'].lower()
 
+
 @pytest.mark.django_db
 class TestWalletServices:
-    """Unit tests for WalletService"""
+    """Comprehensive unit tests for WalletService"""
     
-    def test_get_wallet_balance_success(self, customer_wallet, test_user, test_restaurant):
+    # get_wallet_balance method
+    def test_get_wallet_balance_success(self, test_user, test_restaurant):
         """Test successful wallet balance retrieval"""
+        wallet = CustomerWallet.objects.create(
+        user_id=test_user.id,
+        restaurant_id=test_restaurant.id,
+        available_balance=Decimal('100.00'),
+        pending_balance=Decimal('0.00'),
+        wallet_type='PREPAID',
+        status='ACTIVE',
+        currency='UGX'
+        )
+        
         service = WalletService()
         
         result = service.get_wallet_balance(
             user_id=str(test_user.id),
-            restaurant_id=str(test_restaurant.id)
+            restaurant_id=str(test_restaurant.id),
+            wallet_type='PREPAID'
         )
         
-        assert result['wallet_id'] == str(customer_wallet.id)
-        assert result['available_balance'] == float(customer_wallet.available_balance)
-        assert result['total_balance'] == float(customer_wallet.total_balance)
-        
-        # Verify activity log was created
-        activity_log = ActivityLog.objects.filter(
-            module='WALLET',
-            action='WALLET_BALANCE_CHECKED'
-        ).first()
-        assert activity_log is not None
+        assert result['available_balance'] == Decimal('100.00')
+        assert result['pending_balance'] == Decimal('0.00')
+        assert result['total_balance'] == Decimal('100.00')
+        assert result['currency'] == 'UGX'
+        assert result['status'] == 'ACTIVE'
     
     def test_get_wallet_balance_not_found(self, test_user, test_restaurant):
         """Test wallet balance retrieval for non-existent wallet"""
@@ -911,30 +1006,54 @@ class TestWalletServices:
         
         result = service.get_wallet_balance(
             user_id=str(test_user.id),
-            restaurant_id=str(test_restaurant.id)
+            restaurant_id=str(test_restaurant.id),
+            wallet_type='PREPAID'
         )
         
-        assert 'error' in result
-        assert result['error'] == 'Wallet not found'
-        
-        # Verify activity log was created
-        activity_log = ActivityLog.objects.filter(
-            module='WALLET',
-            action='WALLET_NOT_FOUND'
-        ).first()
-        assert activity_log is not None
+        assert result['available_balance'] == 0
+        assert result['pending_balance'] == 0
+        assert result['total_balance'] == 0
+        assert result['currency'] == 'X-SWIFT'
+        assert result['status'] == 'NOT_FOUND'
     
-    def test_add_funds_success(self, test_user, test_restaurant):
-        """Test successful funds addition to wallet"""
+    def test_get_wallet_balance_different_type(self, test_user, test_restaurant):
+        """Test getting balance for different wallet type"""
         service = WalletService()
+        
+        # Create a loyalty wallet
+        loyalty_wallet = CustomerWallet.objects.create(
+            user=test_user,
+            restaurant=test_restaurant,
+            wallet_type='LOYALTY',
+            available_balance=Decimal('500.00'),
+            currency='X-SWIFT'
+        )
+        
+        result = service.get_wallet_balance(
+            user_id=str(test_user.id),
+            restaurant_id=str(test_restaurant.id),
+            wallet_type='LOYALTY'
+        )
+        
+        assert result['available_balance'] == Decimal('500.00')
+        assert result['wallet_type'] == 'LOYALTY'
+    
+    #  add_funds method
+    def test_add_funds_new_wallet_creation(self, test_user, test_restaurant):
+        """Test creating new wallet when adding funds"""
+        service = WalletService()
+        
+        reference_id = str(uuid.uuid4())
+        correlation_id = str(uuid.uuid4())
         
         result = service.add_funds(
             user_id=str(test_user.id),
             restaurant_id=str(test_restaurant.id),
             amount=Decimal('50.00'),
             reference_type='DEPOSIT',
-            reference_id=str(uuid.uuid4()),
-            description='Test deposit'
+            reference_id=reference_id,
+            description='Test deposit',
+            correlation_id=correlation_id
         )
         
         assert result['success'] is True
@@ -942,34 +1061,34 @@ class TestWalletServices:
         assert result['new_balance'] == 50.0
         
         # Verify wallet was created
-        wallet = CustomerWallet.objects.get(user=test_user, restaurant=test_restaurant)
-        assert wallet.available_balance == Decimal('50.00')
-        
-        # Verify accounting entry was created
-        accounting_entry = AccountingEntry.objects.filter(
+        wallet = CustomerWallet.objects.get(
+            user=test_user,
             restaurant=test_restaurant,
-            reference_type='DEPOSIT'
-        ).first()
-        assert accounting_entry is not None
+            wallet_type='PREPAID'
+        )
+        assert wallet.available_balance == Decimal('50.00')
+        assert wallet.currency == 'UGX'
         
-        # Verify activity logs were created
-        activity_logs = ActivityLog.objects.filter(module='WALLET')
+        # Verify activity logs
+        activity_logs = ActivityLog.objects.filter(correlation_id=correlation_id)
         assert activity_logs.filter(action='WALLET_CREATED').exists()
-        assert activity_logs.filter(action='WALLET_DEPOSIT_COMPLETED').exists()
     
     def test_add_funds_existing_wallet(self, customer_wallet, test_user, test_restaurant):
         """Test adding funds to existing wallet"""
         service = WalletService()
         
         initial_balance = customer_wallet.available_balance
+        reference_id = str(uuid.uuid4())
+        correlation_id = str(uuid.uuid4())
         
         result = service.add_funds(
             user_id=str(test_user.id),
             restaurant_id=str(test_restaurant.id),
             amount=Decimal('25.00'),
             reference_type='DEPOSIT',
-            reference_id=str(uuid.uuid4()),
-            description='Additional deposit'
+            reference_id=reference_id,
+            description='Additional deposit',
+            correlation_id=correlation_id
         )
         
         assert result['success'] is True
@@ -978,3 +1097,645 @@ class TestWalletServices:
         # Verify wallet balance was updated
         customer_wallet.refresh_from_db()
         assert customer_wallet.available_balance == initial_balance + Decimal('25.00')
+        
+        # Verify activity log
+        activity_log = ActivityLog.objects.filter(
+            correlation_id=correlation_id,
+            action='FUNDS_ADDED'
+        ).first()
+        assert activity_log is not None
+        assert activity_log.details['amount'] == 25.0
+    
+    def test_add_funds_closed_wallet(self, customer_wallet, test_user, test_restaurant):
+        """Test adding funds to closed wallet"""
+        service = WalletService()
+        
+        # Close the wallet
+        customer_wallet.status = 'CLOSED'
+        customer_wallet.closed_at = timezone.now()
+        customer_wallet.save()
+        
+        correlation_id = str(uuid.uuid4())
+        
+        result = service.add_funds(
+            user_id=str(test_user.id),
+            restaurant_id=str(test_restaurant.id),
+            amount=Decimal('25.00'),
+            reference_type='DEPOSIT',
+            reference_id=str(uuid.uuid4()),
+            description='Deposit to closed wallet',
+            correlation_id=correlation_id
+        )
+        
+        assert result['allowed'] is False
+        assert result['reason'] == 'WALLET_CLOSED'
+        assert 'permanently closed' in result['message'].lower()
+    
+    def test_add_funds_suspended_wallet(self, customer_wallet, test_user, test_restaurant):
+        """Test adding funds to suspended wallet"""
+        service = WalletService()
+        
+        # Suspend the wallet
+        customer_wallet.status = 'SUSPENDED'
+        customer_wallet.save()
+        
+        correlation_id = str(uuid.uuid4())
+        
+        result = service.add_funds(
+            user_id=str(test_user.id),
+            restaurant_id=str(test_restaurant.id),
+            amount=Decimal('25.00'),
+            reference_type='DEPOSIT',
+            reference_id=str(uuid.uuid4()),
+            description='Deposit to suspended wallet',
+            correlation_id=correlation_id
+        )
+        
+        assert result['allowed'] is False
+        assert result['reason'] == 'WALLET_SUSPENDED'
+        assert 'temporarily suspended' in result['message'].lower()
+    
+    def test_add_funds_accounting_entry_created(self, customer_wallet, test_user, test_restaurant):
+        """Test that accounting entry is created when adding funds"""
+        service = WalletService()
+        
+        reference_id = str(uuid.uuid4())
+        description = "Test deposit accounting"
+        
+        with patch.object(service, '_create_wallet_deposit_accounting_entry') as mock_accounting:
+            result = service.add_funds(
+                user_id=str(test_user.id),
+                restaurant_id=str(test_restaurant.id),
+                amount=Decimal('50.00'),
+                reference_type='DEPOSIT',
+                reference_id=reference_id,
+                description=description
+            )
+            
+            assert result['success'] is True
+            mock_accounting.assert_called_once_with(
+                restaurant_id=str(test_restaurant.id),
+                amount=Decimal('50.00'),
+                reference_id=reference_id,
+                description=description,
+                user_id=str(test_user.id)
+            )
+    
+    def test_add_funds_exception_handling(self, customer_wallet, test_user, test_restaurant):
+        """Test exception handling in add_funds"""
+        service = WalletService()
+        
+        correlation_id = str(uuid.uuid4())
+        
+        # Mock an exception
+        with patch.object(CustomerWallet.objects, 'get_or_create', side_effect=Exception("Database error")):
+            result = service.add_funds(
+                user_id=str(test_user.id),
+                restaurant_id=str(test_restaurant.id),
+                amount=Decimal('50.00'),
+                reference_type='DEPOSIT',
+                reference_id=str(uuid.uuid4()),
+                description='Test deposit',
+                correlation_id=correlation_id
+            )
+            
+            assert result['success'] is False
+            assert 'error' in result
+            assert 'Database error' in result['error']
+            
+            # Verify error was logged
+            activity_log = ActivityLog.objects.filter(
+                correlation_id=correlation_id,
+                action='ADD_FUNDS_FAILED'
+            ).first()
+            assert activity_log is not None
+            assert activity_log.level == 'ERROR'
+    
+    # authorize_order_payment method
+    def test_authorize_order_payment_success(self, customer_wallet, test_user, test_restaurant):
+        """Test successful order authorization"""
+        service = WalletService()
+        
+        order_id = str(uuid.uuid4())
+        amount = Decimal('50.00')
+        correlation_id = str(uuid.uuid4())
+        
+        # Mock the wallet's authorize_funds method
+        with patch.object(customer_wallet, 'authorize_funds') as mock_authorize:
+            mock_authorize.return_value = None
+            
+            result = service.authorize_order_payment(
+                user_id=str(test_user.id),
+                restaurant_id=str(test_restaurant.id),
+                order_id=order_id,
+                amount=amount,
+                correlation_id=correlation_id
+            )
+            
+            assert result is True
+            mock_authorize.assert_called_once_with(
+                amount=amount,
+                reference_type='ORDER',
+                reference_id=order_id,
+                description=f"Order authorization for #{order_id}"
+            )
+            
+            # Verify activity log
+            activity_log = ActivityLog.objects.filter(
+                correlation_id=correlation_id,
+                action='AUTHORIZATION_SUCCESS'
+            ).first()
+            assert activity_log is not None
+            assert activity_log.details['order_id'] == order_id
+    
+    def test_authorize_order_payment_insufficient_funds(self, customer_wallet, test_user, test_restaurant):
+        """Test authorization with insufficient funds"""
+        service = WalletService()
+        
+        order_id = str(uuid.uuid4())
+        amount = Decimal('200.00')  # More than wallet balance
+        correlation_id = str(uuid.uuid4())
+        
+        # Mock InsufficientFundsError
+        from apps.payment.services import InsufficientFundsError
+        
+        with patch.object(customer_wallet, 'authorize_funds', side_effect=InsufficientFundsError("Not enough funds")):
+            with pytest.raises(InsufficientFundsError):
+                service.authorize_order_payment(
+                    user_id=str(test_user.id),
+                    restaurant_id=str(test_restaurant.id),
+                    order_id=order_id,
+                    amount=amount,
+                    correlation_id=correlation_id
+                )
+            
+            # Verify error was logged
+            activity_log = ActivityLog.objects.filter(
+                correlation_id=correlation_id,
+                action='AUTHORIZATION_FAILED'
+            ).first()
+            assert activity_log is not None
+            assert activity_log.level == 'WARNING'
+    
+    def test_authorize_order_payment_general_exception(self, customer_wallet, test_user, test_restaurant):
+        """Test authorization with general exception"""
+        service = WalletService()
+        
+        order_id = str(uuid.uuid4())
+        correlation_id = str(uuid.uuid4())
+        
+        # Mock general exception
+        from apps.payment.services import WalletError
+        
+        with patch.object(CustomerWallet.objects, 'get', side_effect=Exception("Database error")):
+            with pytest.raises(WalletError, match="internal error"):
+                service.authorize_order_payment(
+                    user_id=str(test_user.id),
+                    restaurant_id=str(test_restaurant.id),
+                    order_id=order_id,
+                    amount=Decimal('50.00'),
+                    correlation_id=correlation_id
+                )
+            
+            # Verify critical error was logged
+            activity_log = ActivityLog.objects.filter(
+                correlation_id=correlation_id,
+                action='AUTHORIZATION_CRITICAL_FAILURE'
+            ).first()
+            assert activity_log is not None
+            assert activity_log.level == 'CRITICAL'
+    
+    # capture_order_payment method
+    def test_capture_order_payment_success(self, customer_wallet, test_user, test_restaurant):
+        """Test successful order payment capture"""
+        service = WalletService()
+        
+        order_id = str(uuid.uuid4())
+        amount = Decimal('50.00')
+        correlation_id = str(uuid.uuid4())
+        
+        # Mock the wallet's capture_funds method
+        with patch.object(CustomerWallet, 'capture_funds') as mock_capture:
+            mock_capture.return_value = None
+            
+            result = service.capture_order_payment(
+                user_id=str(test_user.id),
+                restaurant_id=str(test_restaurant.id),
+                order_id=order_id,
+                amount=amount,
+                correlation_id=correlation_id
+            )
+            
+            assert result is True
+            mock_capture.assert_called_once_with(
+                amount=amount,
+                reference_type='ORDER',
+                reference_id=order_id,
+                description=f"Order payment capture for #{order_id}"
+            )
+            
+            # Verify activity log
+            activity_log = ActivityLog.objects.filter(
+                correlation_id=correlation_id,
+                action='CAPTURE_SUCCESS'
+            ).first()
+            assert activity_log is not None
+    
+    def test_capture_order_payment_invalid_pending(self, customer_wallet, test_user, test_restaurant):
+        """Test capture with invalid pending amount"""
+        service = WalletService()
+        
+        order_id = str(uuid.uuid4())
+        correlation_id = str(uuid.uuid4())
+        
+        # Mock InvalidPendingCaptureError
+        from apps.payment.services import InvalidPendingCaptureError
+        
+        with patch.object(CustomerWallet, 'capture_funds', 
+                         side_effect=InvalidPendingCaptureError("Invalid pending amount")):
+            with pytest.raises(InvalidPendingCaptureError):
+                service.capture_order_payment(
+                    user_id=str(test_user.id),
+                    restaurant_id=str(test_restaurant.id),
+                    order_id=order_id,
+                    amount=Decimal('50.00'),
+                    correlation_id=correlation_id
+                )
+            
+            # Verify error was logged
+            activity_log = ActivityLog.objects.filter(
+                correlation_id=correlation_id,
+                action='CAPTURE_FAILED'
+            ).first()
+            assert activity_log is not None
+            assert activity_log.level == 'ERROR'
+    
+    # release_order_authorization method
+    def test_release_order_authorization_success(self, customer_wallet, test_user, test_restaurant):
+        """Test successful release of order authorization"""
+        service = WalletService()
+        
+        customer_wallet.pending_balance = Decimal('100.00')
+        customer_wallet.save()
+        
+        order_id = str(uuid.uuid4())
+        amount = Decimal('50.00')
+        correlation_id = str(uuid.uuid4())
+        
+        # Mock the wallet's release_funds method
+        with patch.object(CustomerWallet, 'release_funds') as mock_release:
+            mock_release.return_value = None
+            
+            result = service.release_order_authorization(
+                user_id=str(test_user.id),
+                restaurant_id=str(test_restaurant.id),
+                order_id=order_id,
+                amount=amount,
+                correlation_id=correlation_id
+            )
+            
+            assert result is True
+            mock_release.assert_called_once_with(
+                amount=amount,
+                reference_type='ORDER_CANCEL',
+                reference_id=order_id,
+                description=f"Order cancellation funds release for #{order_id}"
+            )
+            
+            # Verify activity log
+            activity_log = ActivityLog.objects.filter(
+                correlation_id=correlation_id,
+                action='RELEASE_SUCCESS'
+            ).first()
+            assert activity_log is not None
+    
+    def test_release_order_authorization_invalid_pending(self, customer_wallet, test_user, test_restaurant):
+        """Test release with invalid pending amount"""
+        service = WalletService()
+        
+        order_id = str(uuid.uuid4())
+        correlation_id = str(uuid.uuid4())
+        
+        from apps.payment.services import InvalidPendingCaptureError
+        
+        customer_wallet.pending_balance = Decimal('20.00')
+        customer_wallet.save()
+        
+        # Mock InvalidPendingCaptureError
+        with patch.object(CustomerWallet, 'release_funds', 
+                         side_effect=InvalidPendingCaptureError("Invalid pending amount")):
+            with pytest.raises(InvalidPendingCaptureError):
+                service.release_order_authorization(
+                    user_id=str(test_user.id),
+                    restaurant_id=str(test_restaurant.id),
+                    order_id=order_id,
+                    amount=Decimal('50.00'),
+                    correlation_id=correlation_id
+                )
+            
+            # Verify error was logged
+            activity_log = ActivityLog.objects.filter(
+                correlation_id=correlation_id,
+                action='RELEASE_FAILED'
+            ).first()
+            assert activity_log is not None
+            assert activity_log.level == 'ERROR'
+    
+    # process_refund method
+    def test_process_refund_success(self, customer_wallet, test_user, test_restaurant):
+        """Test successful refund processing"""
+        service = WalletService()
+        
+        refund_id = str(uuid.uuid4())
+        amount = Decimal('25.00')
+        original_ref = 'PAYMENT_12345'
+        correlation_id = str(uuid.uuid4())
+        
+        # Mock the wallet's refund_funds method
+        with patch.object(CustomerWallet, 'refund_funds') as mock_refund:
+            mock_refund.return_value = None
+            
+            result = service.process_refund(
+                user_id=str(test_user.id),
+                restaurant_id=str(test_restaurant.id),
+                refund_id=refund_id,
+                amount=amount,
+                original_payment_ref=original_ref,
+                wallet_type='PREPAID',
+                correlation_id=correlation_id
+            )
+            
+            assert result is True
+            mock_refund.assert_called_once_with(
+                amount=amount,
+                reference_type='REFUND',
+                reference_id=refund_id,
+                original_payment_ref=original_ref,
+                description=f"Processing refund ID {refund_id}"
+            )
+            
+            # Verify activity log
+            activity_log = ActivityLog.objects.filter(
+                correlation_id=correlation_id,
+                action='FUNDS_REFUNDED'
+            ).first()
+            assert activity_log is not None
+            assert activity_log.details['refund_id'] == refund_id
+    
+    def test_process_refund_wallet_error(self, customer_wallet, test_user, test_restaurant):
+        """Test refund processing with wallet error"""
+        service = WalletService()
+        
+        refund_id = str(uuid.uuid4())
+        correlation_id = str(uuid.uuid4())
+        
+        # Mock WalletError
+        from apps.payment.services import WalletError
+        
+        with patch.object(CustomerWallet, 'refund_funds', 
+                         side_effect=WalletError("Wallet is closed")):
+            with pytest.raises(WalletError):
+                service.process_refund(
+                    user_id=str(test_user.id),
+                    restaurant_id=str(test_restaurant.id),
+                    refund_id=refund_id,
+                    amount=Decimal('25.00'),
+                    original_payment_ref='PAYMENT_123',
+                    correlation_id=correlation_id
+                )
+            
+            # Verify error was logged
+            activity_log = ActivityLog.objects.filter(
+                correlation_id=correlation_id,
+                action='REFUND_FAILED'
+            ).first()
+            assert activity_log is not None
+            assert activity_log.level == 'ERROR'
+    
+    def test_process_refund_general_exception(self, customer_wallet, test_user, test_restaurant):
+        """Test refund processing with general exception"""
+        service = WalletService()
+        
+        refund_id = str(uuid.uuid4())
+        correlation_id = str(uuid.uuid4())
+        
+        from apps.payment.services import WalletError
+        
+        # Mock general exception
+        with patch.object(CustomerWallet, 'refund_funds', 
+                         side_effect=Exception("Unexpected error")):
+            with pytest.raises(WalletError, match="internal error"):
+                service.process_refund(
+                    user_id=str(test_user.id),
+                    restaurant_id=str(test_restaurant.id),
+                    refund_id=refund_id,
+                    amount=Decimal('25.00'),
+                    original_payment_ref='PAYMENT_123',
+                    correlation_id=correlation_id
+                )
+            
+            # Verify critical error was logged
+            activity_log = ActivityLog.objects.filter(
+                correlation_id=correlation_id,
+                action='REFUND_CRITICAL_FAILURE'
+            ).first()
+            assert activity_log is not None
+            assert activity_log.level == 'CRITICAL'
+    
+    def test_process_refund_different_wallet_type(self, test_user, test_restaurant):
+        """Test refund to different wallet type (LOYALTY)"""
+        service = WalletService()
+        
+        # Create a loyalty wallet
+        loyalty_wallet = CustomerWallet.objects.create(
+            user=test_user,
+            restaurant=test_restaurant,
+            wallet_type='LOYALTY',
+            available_balance=Decimal('100.00')
+        )
+        
+        refund_id = str(uuid.uuid4())
+        correlation_id = str(uuid.uuid4())
+        
+        with patch.object(CustomerWallet, 'refund_funds') as mock_refund:
+            mock_refund.return_value = None
+            
+            result = service.process_refund(
+                user_id=str(test_user.id),
+                restaurant_id=str(test_restaurant.id),
+                refund_id=refund_id,
+                amount=Decimal('50.00'),
+                original_payment_ref='PAYMENT_123',
+                wallet_type='LOYALTY',
+                correlation_id=correlation_id
+            )
+            
+            assert result is True
+            mock_refund.assert_called_once()
+    
+    #_get_wallet_for_user helper method
+    def test_get_wallet_for_user_success(self, customer_wallet, test_user, test_restaurant):
+        """Test successful wallet retrieval"""
+        service = WalletService()
+        
+        wallet = service._get_wallet_for_user(
+            user_id=str(test_user.id),
+            restaurant_id=str(test_restaurant.id),
+            wallet_type='PREPAID'
+        )
+        
+        assert wallet == customer_wallet
+        assert wallet.user == test_user
+        assert wallet.restaurant == test_restaurant
+    
+    def test_get_wallet_for_user_not_found(self, test_user, test_restaurant):
+        """Test wallet retrieval when not found"""
+        service = WalletService()
+        
+        with pytest.raises(WalletError, match="Customer wallet not found"):
+            service._get_wallet_for_user(
+                user_id=str(test_user.id),
+                restaurant_id=str(test_restaurant.id),
+                wallet_type='PREPAID'
+            )
+    
+    # Edge cases and integration tests
+    def test_concurrent_wallet_operations(self, customer_wallet, test_user, test_restaurant):
+        """Test that wallet operations handle concurrency"""
+        service = WalletService()
+        
+        order_id = str(uuid.uuid4())
+        correlation_id = str(uuid.uuid4())
+        
+        # Simulate authorization and capture
+        with patch.object(customer_wallet, 'authorize_funds') as mock_authorize:
+            with patch.object(customer_wallet, 'capture_funds') as mock_capture:
+                mock_authorize.return_value = None
+                mock_capture.return_value = None
+                
+                # Authorize
+                auth_result = service.authorize_order_payment(
+                    user_id=str(test_user.id),
+                    restaurant_id=str(test_restaurant.id),
+                    order_id=order_id,
+                    amount=Decimal('50.00'),
+                    correlation_id=correlation_id
+                )
+                
+                # Capture
+                capture_result = service.capture_order_payment(
+                    user_id=str(test_user.id),
+                    restaurant_id=str(test_restaurant.id),
+                    order_id=order_id,
+                    amount=Decimal('50.00'),
+                    correlation_id=str(uuid.uuid4())
+                )
+                
+                assert auth_result is True
+                assert capture_result is True
+                
+                mock_authorize.assert_called_once()
+                mock_capture.assert_called_once()
+    
+    def test_wallet_status_methods(self, customer_wallet):
+        """Test wallet status helper methods"""
+        # Test active wallet
+        customer_wallet.status = 'ACTIVE'
+        assert customer_wallet.is_active() is True
+        assert customer_wallet.is_suspended() is False
+        assert customer_wallet.is_closed() is False
+        
+        # Test suspended wallet
+        customer_wallet.status = 'SUSPENDED'
+        assert customer_wallet.is_active() is False
+        assert customer_wallet.is_suspended() is True
+        
+        # Test closed wallet
+        customer_wallet.status = 'CLOSED'
+        customer_wallet.closed_at = timezone.now()
+        assert customer_wallet.is_active() is False
+        assert customer_wallet.is_closed() is True
+    
+    def test_correlation_id_propagation(self, test_user, test_restaurant):
+        """Test that correlation IDs are properly propagated"""
+        service = WalletService()
+        
+        correlation_id = str(uuid.uuid4())
+        order_id = str(uuid.uuid4())
+        
+        with patch.object(CustomerWallet.objects, 'get') as mock_get:
+            mock_wallet = Mock()
+            
+            from decimal import Decimal
+            
+            mock_wallet.available_balance = Decimal('100.00') 
+            mock_wallet.pending_balance = Decimal('0.00')
+            
+            mock_wallet.authorize_funds = Mock(return_value=None)
+            mock_get.return_value = mock_wallet
+            
+            service.authorize_order_payment(
+                user_id=str(test_user.id),
+                restaurant_id=str(test_restaurant.id),
+                order_id=order_id,
+                amount=Decimal('50.00'),
+                correlation_id=correlation_id
+            )
+            
+            # Verify activity log has the correlation ID
+            activity_log = ActivityLog.objects.filter(correlation_id=correlation_id).first()
+            assert activity_log is not None
+            assert activity_log.correlation_id == uuid.UUID(correlation_id)
+
+
+# Additional test class for error scenarios
+@pytest.mark.django_db
+class TestWalletServiceErrorScenarios:
+    """Tests for specific error scenarios in WalletService"""
+    
+    def test_add_funds_max_balance_limit(self, test_user, test_restaurant):
+        """Test adding funds when wallet has max balance limit"""
+        service = WalletService()
+        
+        # Create wallet with max balance
+        wallet = CustomerWallet.objects.create(
+            user=test_user,
+            restaurant=test_restaurant,
+            wallet_type='PREPAID',
+            available_balance=Decimal('900.00'),
+            max_balance=Decimal('1000.00')
+        )
+        
+        # add more than max balance allows
+        result = service.add_funds(
+            user_id=str(test_user.id),
+            restaurant_id=str(test_restaurant.id),
+            amount=Decimal('150.00'),  # Would exceed max balance
+            reference_type='DEPOSIT',
+            reference_id=str(uuid.uuid4()),
+            description='Test deposit'
+        )
+        
+        assert result['success'] is False
+        assert 'exceeding the maximum limit' in result['error']
+        
+    def test_refund_exceeds_original_payment(self, customer_wallet, test_user, test_restaurant):
+        """Test refund amount exceeding original payment"""
+        service = WalletService()
+        
+        refund_id = str(uuid.uuid4())
+        
+        from apps.payment.services import WalletError
+        
+        with patch.object(CustomerWallet, 'refund_funds') as mock_refund:
+            # the model validates this
+            mock_refund.side_effect = WalletError("Refund amount exceeds original payment")
+            
+            with pytest.raises(WalletError, match="exceeds original payment"):
+                service.process_refund(
+                    user_id=str(test_user.id),
+                    restaurant_id=str(test_restaurant.id),
+                    refund_id=refund_id,
+                    amount=Decimal('200.00'),  # More than wallet balance
+                    original_payment_ref='PAYMENT_123'
+                )
