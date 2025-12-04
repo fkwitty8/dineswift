@@ -8,7 +8,7 @@ class OrderItemSerializer(serializers.Serializer):
     name = serializers.CharField()
     quantity = serializers.IntegerField(min_value=1)
     price = serializers.DecimalField(max_digits=10, decimal_places=2)
-    total_price = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    total_price = serializers.DecimalField(max_digits=10, decimal_places=2)
     special_instructions = serializers.CharField(required=False, allow_blank=True)
     modifiers = serializers.ListField(
         child=serializers.DictField(),
@@ -18,9 +18,20 @@ class OrderItemSerializer(serializers.Serializer):
     
     def validate(self, attrs):
         # Calculate total price
-        quantity = attrs['quantity']
-        price = attrs['price']
-        attrs['total_price'] = Decimal(quantity) * price
+        provided_total=attrs.get('total_price')
+        calculated_total_price=attrs['quantity'] * attrs['price'].quantize(Decimal('0.01'))
+        
+        if provided_total is None:
+             raise serializers.ValidationError({
+                 'total_price': 'This field is required.'
+             })
+             
+        if calculated_total_price != provided_total.quantize(Decimal('0.01')):
+           raise serializers.ValidationError({
+                'total_price': f'Item total ({provided_total}) does not match calculated total_item_price ({calculated_total_price})'
+
+            }) 
+        
         return attrs
 
 class OrderCreateSerializer(serializers.Serializer):
@@ -56,8 +67,8 @@ class OrderCreateSerializer(serializers.Serializer):
         
         provided_total_amount = attrs['total_amount']
         
-        # Compare the expected total (calculated items + provided tax) with the provided total amount
-        # Use quantize for precise Decimal comparison
+        # Compare the expected total (calculated_subtotals) with the provided total amount
+        # Using quantize for precise Decimal comparison
         if calculated_subtotal.quantize(Decimal('0.01')) != provided_total_amount.quantize(Decimal('0.01')):
             raise serializers.ValidationError(
                 {'total_amount': f"The provided total amount ({provided_total_amount}) does not match the calculated amount ({calculated_subtotal}) based on item totals and tax."}
@@ -65,8 +76,6 @@ class OrderCreateSerializer(serializers.Serializer):
             
         # Add the calculated subtotal to attrs for use in the create method
         attrs['calculated_subtotal'] = calculated_subtotal
-        
-        # ------------------------------------------------------------------
         
         return attrs
 
