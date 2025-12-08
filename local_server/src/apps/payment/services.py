@@ -181,7 +181,6 @@ class InvoiceService:
             )
             return {'error': 'Failed to retrieve invoice status'}
 
-
 class PaymentService:
     """
     Comprehensive Payment Service with proper Invoice-AccountingEntry linking
@@ -265,35 +264,6 @@ class PaymentService:
             'requires_staff_action': True
         }
     
-    def _notify_staff_cash_payment(self, payment: Payment, invoice: Invoice):
-        """Notify staff about cash payment awaiting collection"""
-        try:
-            # Real-time notification via WebSocket or push notification
-            notification_data = {
-                'type': 'CASH_PAYMENT_AWAITING_COLLECTION',
-                'payment_id': str(payment.id),
-                'invoice_id': str(invoice.id),
-                'order_id': str(invoice.order.id),
-                'amount': float(payment.amount),
-                'customer_phone': payment.customer_phone,
-                'timestamp': timezone.now().isoformat()
-            }
-            
-            # Send via your preferred real-time service, Django Channels,
-            
-            self._send_real_time_notification(
-                room=f"restaurant_{payment.restaurant_id}_staff",
-                event='payment_awaiting_collection',
-                data=notification_data
-            )
-            
-            logger.info(f"Cash payment notification sent for payment {payment.id}")
-            
-        except Exception as e:
-            logger.error(f"Failed to send staff notification: {str(e)}")
-
-    # Update the _notify_staff_cash_payment method to use the new notification system
-
     def _notify_staff_cash_payment(self, payment: Payment, invoice: Invoice):
         """Enhanced staff notification for cash payments using real-time notifications"""
         try:
