@@ -56,7 +56,6 @@ class InvoiceAmountBreakdownSerializer(serializers.Serializer):
         default=0
     )
 
-
 class InvoiceCreateSerializer(UUIDSerializerMixin, TimestampSerializerMixin):
     """Serializer for creating invoices"""
     order_id = serializers.UUIDField(required=True)
@@ -889,3 +888,5 @@ class PaymentQuerySerializer(serializers.Serializer):
     end_date = serializers.DateTimeField(required=False)
     page = serializers.IntegerField(min_value=1, default=1)
     page_size = serializers.IntegerField(min_value=1, max_value=100, default=20)
+    
+    

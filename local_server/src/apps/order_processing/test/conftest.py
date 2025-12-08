@@ -109,7 +109,8 @@ def test_order(db, test_restaurant):
                 'id': '1',
                 'name': 'Test Item',
                 'price': '10.00',
-                'quantity': 2
+                'quantity': 2,
+                'total':'20'
             }
         ],
         total_amount=Decimal('21.60'),
