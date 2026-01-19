@@ -2,7 +2,7 @@ from rest_framework import serializers
 from .models import MenuCache
 from django.core.validators import MinValueValidator
 
-class MenuItemSerializer(serializers.Serializer):
+class BaseMenuItemSerializer(serializers.Serializer):
     """Serializer for individual menu items (nested in menu data)"""
     id = serializers.UUIDField(error_messages={'invalid': 'Must be a valid UUID.'})
     name = serializers.CharField(error_messages={'blank': 'Name cannot be blank.'})
@@ -15,14 +15,14 @@ class MenuItemSerializer(serializers.Serializer):
     allergens = serializers.ListField(child=serializers.CharField(), required=False)
     image_url = serializers.URLField(required=False, allow_null=True)
 
-class MenuCategorySerializer(serializers.Serializer):
+class BaseMenuCategorySerializer(serializers.Serializer):
     """Serializer for menu categories"""
     id = serializers.UUIDField()
     name = serializers.CharField()
     description = serializers.CharField(required=False, allow_blank=True)
-    items = MenuItemSerializer(many=True)
+    items = BaseMenuItemSerializer(many=True)
 
-class MenuCacheSerializer(serializers.ModelSerializer):
+class BaseMenuCacheSerializer(serializers.ModelSerializer):
     restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
     menu_items_count = serializers.SerializerMethodField()
     categories = serializers.SerializerMethodField()
@@ -46,9 +46,9 @@ class MenuCacheSerializer(serializers.ModelSerializer):
         """Extract and serialize categories from menu_data"""
         menu_data = obj.menu_data or {}
         categories = menu_data.get('categories', [])
-        return MenuCategorySerializer(categories, many=True).data
+        return BaseMenuCategorySerializer(categories, many=True).data
 
-class MenuSyncSerializer(serializers.Serializer):
+class BaseMenuSyncSerializer(serializers.Serializer):
     """Serializer for menu sync requests"""
     force_refresh = serializers.BooleanField(default=False)
     restaurant_id = serializers.UUIDField(required=False)
@@ -59,3 +59,51 @@ class MenuSyncSerializer(serializers.Serializer):
         if 'restaurant_id' not in attrs and request and hasattr(request.user, 'restaurant_id'):
             attrs['restaurant_id'] = request.user.restaurant_id
         return attrs
+    
+    
+    
+# apps/menu_cache/
+
+# ├── api/
+
+# │   ├── init.py
+
+# │   ├── v1/
+
+# │   │   ├── init.py
+
+# │   │   ├── serializers.py    # Inherits from global serializers
+
+# │   │   ├── urls.py           # v1 endpoints
+
+# │   │   └── views.py          # Legacy Logic
+
+# │   └── v2/
+
+# │       ├── init.py
+
+# │       ├── serializers.py    # Inherits/Extends V1 or Global
+
+# │       ├── urls.py           # v2 endpoints
+
+# │       └── views.py          # Modern Logic
+
+# ├── services/                 # THE BRAIN (Shared Business Logic)
+
+# │   ├── init.py           # Exports Services
+
+# │   ├── base.py               # Shared DB queries & ABC
+
+# │   ├── legacy_service.py     # V1 specific business rules
+
+# │   └── modern_service.py     # V2 specific business rules (Redis, etc.)
+
+# ├── models.py                 # Single source of truth for Data
+
+# ├── serializers.py            # GLOBAL: Shared BaseSerializers for DRY code
+
+# ├── urls.py                   # APPS ROUTER (v1/, v2/, v3/)
+
+# ├── exceptions.py             # App-specific error classes
+
+# └── utils.py                  # Tiny helper functions (hashing, math)

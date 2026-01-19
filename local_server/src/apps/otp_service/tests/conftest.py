@@ -38,22 +38,72 @@ def test_order(test_restaurant):
     from apps.order_processing.models import OfflineOrder
     
     order = OfflineOrder.objects.create(
-        restaurant=test_restaurant,
-        local_order_id=f"TEST-{uuid.uuid4().hex[:8].upper()}",
-        order_items=[
-            {
-                "id": str(uuid.uuid4()),
-                "name": "Test Item",
-                "price": "10.99",
-                "quantity": 2,
-                "total": "21.98"
-            }
+        {
+  "table_number": null,
+  "menu": {
+    "categories": [
+      {
+        "name": "Buckets & Meals",
+        "items": [
+          {
+            "id": "11111111-2222-3333-4444-555555555555",
+            "name": "9 Pcs Original Recipe Bucket",
+            "price": "34.99",
+            "image_url": "https://placehold.co/400x250/C8102E/FFFFFF?text=Original+Bucket",
+            "description": "9 pieces of Original Recipe chicken.",
+            "is_available": true,
+            "display_order": 1,
+            "kitchen_station": "Fry Station",
+            "preparation_time": 20
+          },
+          {
+            "id": "22222222-3333-4444-5555-666666666666",
+            "name": "Zinger Burger Meal",
+            "price": "12.50",
+            "image_url": "https://placehold.co/400x250/C8102E/FFFFFF?text=Zinger+Meal",
+            "description": "Spicy Zinger fillet, lettuce, and mayo.",
+            "is_available": true,
+            "display_order": 2,
+            "kitchen_station": "Assembly",
+            "preparation_time": 8
+          }
         ],
-        total_amount=Decimal('21.98'),
-        tax_amount=Decimal('1.76'),
-        special_instructions="Test instructions",
-        order_status='READY',
-        sync_status='SYNCED'
+        "description": "The Colonels Original Recipe and Zinger options."
+      },
+      {
+        "name": "Sides & Desserts",
+        "items": [
+          {
+            "id": "33333333-4444-5555-6666-777777777777",
+            "name": "Large Fries",
+            "price": "4.99",
+            "image_url": "https://placehold.co/400x250/C8102E/FFFFFF?text=KFC+Fries",
+            "description": "Our signature salted fries.",
+            "is_available": true,
+            "display_order": 1,
+            "kitchen_station": "Fry Station",
+            "preparation_time": 5
+          },
+          {
+            "id": "44444444-5555-6666-7777-888888888888",
+            "name": "Coleslaw",
+            "price": "3.50",
+            "image_url": "https://placehold.co/400x250/C8102E/FFFFFF?text=Coleslaw",
+            "description": "Classic creamy coleslaw.",
+            "is_available": true,
+            "display_order": 2,
+            "kitchen_station": "Cold Prep",
+            "preparation_time": 2
+          }
+        ],
+        "description": "Fries, Gravy, and famous Coleslaw."
+      }
+    ],
+    "last_synced": "2025-11-18T10:00:00Z",
+    "restaurant_name": "KFC - Test Location"
+  },
+  "cached": true
+}
     )
     return order
 

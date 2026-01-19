@@ -6,6 +6,8 @@ from django.conf.urls.static import static
 from prometheus_client import make_wsgi_app
 from django.http import JsonResponse
 
+
+
 def health_check(request):
     from apps.core.models import HealthCheck
     
