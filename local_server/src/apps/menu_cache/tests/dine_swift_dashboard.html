@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Muele Management Dashboard</title>
+    <!-- Tailwind for modern layout utility, Lucide icons via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background-color: #f8fafc;
+        }
+        /* Custom scrollbar for a premium feel */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        
+        .card-shadow { box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.05), 0 2px 4px -2px rgb(0 0 0 / 0.05); }
+        .active-link { background-color: #ecfdf5; color: #059669; border-right: 4px solid #059669; }
+    </style>
+</head>
+<body class="min-h-screen">
+
+    <!-- TOP NAVIGATION (F-Pattern: Crucial Data) -->
+    <nav class="sticky top-0 z-40 w-full bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-4">
+            <div class="bg-emerald-600 p-2 rounded-xl text-white">
+                <i data-lucide="package" class="w-6 h-6"></i>
+            </div>
+            <div>
+                <h1 id="restaurant-title" class="font-bold text-lg leading-tight">Muele Dashboard</h1>
+                <p class="text-[10px] text-slate-500 uppercase tracking-widest font-bold flex items-center gap-1">
+                    <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span> Terminal Active
+                </p>
+            </div>
+        </div>
+
+        <!-- SEARCH (Hick's Law: Contextual Filtering) -->
+        <div class="hidden md:flex relative w-1/3">
+            <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400"></i>
+            <input 
+                type="text" 
+                id="search-input"
+                placeholder="Search menu items..." 
+                class="w-full bg-slate-100 border-none rounded-xl py-2 pl-10 pr-4 text-sm focus:ring-2 focus:ring-emerald-500 transition-all outline-none"
+            >
+        </div>
+
+        <div class="flex items-center gap-3">
+            <button class="p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition-colors">
+                <i data-lucide="bell" class="w-5 h-5"></i>
+            </button>
+            <div class="h-8 w-8 rounded-full bg-emerald-100 border border-emerald-200 flex items-center justify-center text-emerald-700 font-bold text-xs">
+                AD
+            </div>
+        </div>
+    </nav>
+
+    <!-- DASHBOARD CONTENT -->
+    <div class="max-w-[1600px] mx-auto grid grid-cols-1 lg:grid-cols-12 gap-0 lg:gap-6 p-0 lg:p-6">
+        
+        <!-- SIDEBAR (Gestalt: Proximity & Similarity) -->
+        <aside class="lg:col-span-3 bg-white lg:bg-transparent border-b lg:border-none border-slate-200 p-4 lg:p-0">
+            <div class="lg:bg-white lg:rounded-2xl lg:p-5 lg:card-shadow lg:border lg:border-slate-100 sticky lg:top-24">
+                <h3 class="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-4 px-3">Categories</h3>
+                <nav id="category-nav" class="space-y-1">
+                    <!-- Categories injected by JS -->
+                    <div class="animate-pulse space-y-2">
+                        <div class="h-10 bg-slate-100 rounded-lg"></div>
+                        <div class="h-10 bg-slate-100 rounded-lg"></div>
+                    </div>
+                </nav>
+
+                <div class="mt-8 pt-6 border-t border-slate-100 px-3">
+                    <div class="bg-slate-900 rounded-xl p-4 text-white">
+                        <div class="flex justify-between items-start mb-4">
+                            <i data-lucide="activity" class="w-5 h-5 text-emerald-400"></i>
+                            <span class="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full font-bold">LIVE</span>
+                        </div>
+                        <p class="text-xs text-slate-400 font-medium">Kitchen Capacity</p>
+                        <p class="text-xl font-bold">84%</p>
+                        <div class="w-full bg-slate-800 h-1.5 rounded-full mt-2">
+                            <div class="bg-emerald-500 h-1.5 rounded-full" style="width: 84%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- MAIN GRID (Visual Weight & White Space) -->
+        <main class="lg:col-span-9 p-6 lg:p-0">
+            <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-8">
+                <div>
+                    <h2 id="current-category-label" class="text-3xl font-extrabold text-slate-900 tracking-tight">Full Menu</h2>
+                    <p class="text-slate-500 text-sm mt-1">Management view for product availability and preparation times.</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button class="bg-white border border-slate-200 px-4 py-2 rounded-xl text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2 transition-all">
+                        <i data-lucide="sliders-horizontal" class="w-4 h-4"></i> Filter
+                    </button>
+                    <button class="bg-emerald-600 px-4 py-2 rounded-xl text-sm font-bold text-white hover:bg-emerald-700 shadow-lg shadow-emerald-200 transition-all">
+                        Add Item
+                    </button>
+                </div>
+            </div>
+
+            <!-- GRID AREA -->
+            <div id="items-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                <!-- Items injected by JS -->
+            </div>
+
+            <!-- Empty State -->
+            <div id="empty-state" class="hidden py-20 text-center bg-white rounded-3xl border-2 border-dashed border-slate-200">
+                <i data-lucide="package-search" class="w-12 h-12 text-slate-300 mx-auto mb-4"></i>
+                <h3 class="text-lg font-bold text-slate-900">No matches found</h3>
+                <p class="text-slate-500">Try changing your search or category selection.</p>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // Production State Manager
+        const state = {
+            menu: null,
+            activeCategory: 'all',
+            searchQuery: '',
+            isLoading: true
+        };
+
+        // UI References
+        const elements = {
+            grid: document.getElementById('items-grid'),
+            catNav: document.getElementById('category-nav'),
+            search: document.getElementById('search-input'),
+            title: document.getElementById('restaurant-title'),
+            catLabel: document.getElementById('current-category-label'),
+            emptyState: document.getElementById('empty-state')
+        };
+
+        /**
+         * Defensive Programming: Sanitize strings for IDs/Selectors
+         */
+        const slugify = (str) => str.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
+        /**
+         * Core Render Engine
+         */
+        function render() {
+            if (!state.menu) return;
+
+            // 1. Update Title & Headers
+            elements.title.textContent = state.menu.restaurant_name;
+            elements.catLabel.textContent = state.activeCategory === 'all' 
+                ? "Full Menu" 
+                : state.activeCategory.replace(/-/g, ' ');
+
+            // 2. Render Navigation
+            const navHtml = [`
+                <button onclick="setCategory('all')" class="w-full text-left px-4 py-2.5 rounded-xl text-sm font-bold transition-all ${state.activeCategory === 'all' ? 'active-link' : 'text-slate-500 hover:bg-slate-50'}">
+                    All Products
+                </button>
+            `];
+
+            state.menu.categories.forEach(cat => {
+                const id = slugify(cat.name);
+                navHtml.push(`
+                    <button onclick="setCategory('${id}')" class="w-full text-left px-4 py-2.5 rounded-xl text-sm font-bold transition-all ${state.activeCategory === id ? 'active-link' : 'text-slate-500 hover:bg-slate-50'}">
+                        ${cat.name}
+                    </button>
+                `);
+            });
+            elements.catNav.innerHTML = navHtml.join('');
+
+            // 3. Filter & Render Items (The "Outcome" of Hick's Law)
+            let filteredItems = [];
+            state.menu.categories.forEach(cat => {
+                if (state.activeCategory === 'all' || slugify(cat.name) === state.activeCategory) {
+                    filteredItems.push(...cat.items);
+                }
+            });
+
+            if (state.searchQuery) {
+                const q = state.searchQuery.toLowerCase();
+                filteredItems = filteredItems.filter(item => 
+                    item.name.toLowerCase().includes(q) || 
+                    item.description.toLowerCase().includes(q)
+                );
+            }
+
+            // Grid rendering
+            if (filteredItems.length === 0) {
+                elements.grid.classList.add('hidden');
+                elements.emptyState.classList.remove('hidden');
+            } else {
+                elements.grid.classList.remove('hidden');
+                elements.emptyState.classList.add('hidden');
+                
+                elements.grid.innerHTML = filteredItems.map(item => `
+                    <div class="group bg-white rounded-2xl border border-slate-200 overflow-hidden hover:shadow-xl hover:-translate-y-1 transition-all duration-300 flex flex-col">
+                        <div class="h-40 bg-slate-100 relative">
+                            <img src="https://placehold.co/400x250/064e3b/FFFFFF?text=${item.name.split(' ').join('+')}" class="w-full h-full object-cover">
+                            <div class="absolute top-3 right-3 bg-white/90 backdrop-blur px-2 py-1 rounded-lg text-xs font-black text-emerald-800 shadow-sm border border-white/50">
+                                $${item.price}
+                            </div>
+                        </div>
+                        <div class="p-5 flex-1 flex flex-col">
+                            <div class="flex justify-between items-start mb-2">
+                                <h4 class="font-bold text-slate-800 leading-snug">${item.name}</h4>
+                                <i data-lucide="${item.is_available ? 'check-circle-2' : 'alert-circle'}" class="w-4 h-4 ${item.is_available ? 'text-emerald-500' : 'text-amber-500'}"></i>
+                            </div>
+                            <p class="text-xs text-slate-500 line-clamp-2 mb-4 flex-1">${item.description}</p>
+                            <div class="pt-4 border-t border-slate-100 flex items-center justify-between">
+                                <div class="flex items-center gap-1.5 text-[10px] font-black text-slate-400 uppercase tracking-tighter">
+                                    <i data-lucide="clock" class="w-3 h-3"></i> ${item.preparation_time}m
+                                </div>
+                                <span class="text-[9px] bg-slate-100 text-slate-600 px-2 py-1 rounded font-black uppercase tracking-widest">
+                                    ${item.kitchen_station}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            }
+
+            // Re-initialize icons for newly injected HTML
+            lucide.createIcons();
+        }
+
+        // Action Handlers
+        window.setCategory = (id) => {
+            state.activeCategory = id;
+            render();
+        };
+
+        elements.search.addEventListener('input', (e) => {
+            state.searchQuery = e.target.value;
+            render();
+        });
+
+        // Initial Boot
+        window.onload = () => {
+            // Mock API Fetch
+            setTimeout(() => {
+                state.menu = {
+                    restaurant_name: "KFC - Test Location",
+                    categories: [
+                        {
+                            name: "Buckets & Meals",
+                            items: [
+                                { id: "1", name: "9 Pcs Original Recipe Bucket", price: "34.99", description: "9 pieces of Original Recipe chicken.", preparation_time: 20, is_available: true, kitchen_station: "Fry Station" },
+                                { id: "2", name: "Zinger Burger Meal", price: "12.50", description: "Spicy Zinger fillet, lettuce, and mayo.", preparation_time: 8, is_available: true, kitchen_station: "Assembly" }
+                            ]
+                        },
+                        {
+                            name: "Sides & Desserts",
+                            items: [
+                                { id: "3", name: "Large Fries", price: "4.99", description: "Our signature salted fries.", preparation_time: 5, is_available: true, kitchen_station: "Fry Station" },
+                                { id: "4", name: "Coleslaw", price: "3.50", description: "Classic creamy coleslaw.", preparation_time: 2, is_available: true, kitchen_station: "Cold Prep" }
+                            ]
+                        }
+                    ]
+                };
+                state.isLoading = false;
+                render();
+            }, 500);
+        };
+    </script>
+</body>
+</html>
